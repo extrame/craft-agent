@@ -15,7 +15,10 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"io/fs"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -37,10 +40,61 @@ import (
 
 // 前端构建产物随二进制分发。
 //
+// 目录里只要有一个文件就能编译：fresh clone 里只有 .keep，界面由 pageHandler
+// 兜底说明。以前这里放的是一张占位的 index.html，代价是 `git checkout` 恢复它
+// 之后忘了重新构建，二进制里就悄悄换成占位页 —— 构建成功、界面作废。
+//
 //go:embed all:frontend/dist
 var assets embed.FS
 
 const version = "0.1.0"
+
+// pageHandler 决定窗口里显示什么。
+//
+// dist 里没有 index.html 时（fresh clone，只 commit 了 .keep），不能把请求直接
+// 交给文件服务器：那只会得到一张 404，看不出该跑哪条命令。这里换成一张说明页，
+// 内容就是让界面能起来的步骤。
+func pageHandler(fsys fs.FS, built http.Handler) http.Handler {
+	if _, err := fs.Stat(fsys, "frontend/dist/index.html"); err == nil {
+		return built
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" && r.URL.Path != "/index.html" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = io.WriteString(w, notBuiltPage)
+	})
+}
+
+// notBuiltPage 只在二进制没带前端时出现，所以它自己不能依赖任何前端资源。
+const notBuiltPage = `<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8">
+<title>Craft Agent</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center;
+         font: 14px/1.7 -apple-system, "PingFang SC", system-ui, sans-serif;
+         background: #f7f6f3; color: #26241f; }
+  main { max-width: 40rem; padding: 2.5rem; }
+  h1 { font-size: 1.15rem; margin: 0 0 .75rem; }
+  p { margin: 0 0 1rem; color: #55524b; }
+  pre { background: #fff; border: 1px solid #e3e0d8; border-radius: 6px;
+        padding: .9rem 1rem; overflow-x: auto; font-size: 13px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  small { color: #85817a; }
+</style>
+<main>
+  <h1>界面还没构建 / Front end not built</h1>
+  <p>这个二进制里没有打包界面，只有占位页。命令行功能不受影响：
+     <code>craft-agent apps</code>、<code>craft-agent mcp</code> 照常可用。</p>
+  <pre><code>cd frontend &amp;&amp; npm install &amp;&amp; npm run build
+cd .. &amp;&amp; go build -o bin/craft-agent .</code></pre>
+  <p><small>This binary was built from a checkout without <code>frontend/dist</code>.
+     Run the two commands above, then rebuild.</small></p>
+</main></html>`
 
 // Wails 事件：活动流、状态快照、跨进程流水、安装进度。
 const (
@@ -513,7 +567,7 @@ func runGUI() {
 			application.NewService(svc),
 		},
 		Assets: application.AssetOptions{
-			Handler: application.AssetFileServerFS(assets),
+			Handler: pageHandler(assets, application.AssetFileServerFS(assets)),
 		},
 		Mac: application.MacOptions{
 			// 关窗只是收起：Craft 应用和流水都还在，退出去下次还得重新发现一遍。

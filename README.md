@@ -176,8 +176,9 @@ go build -o bin/craft-agent .
 wails3 build
 ```
 
-> The binary embeds `frontend/dist`. A fresh clone carries a placeholder page there so
-> `go build` works before you have run step 2 — run step 2 to get the real interface.
+> The binary embeds `frontend/dist`. You can build without step 2 — the window then
+> shows a "front end not built" page instead, while `craft-agent apps` and
+> `craft-agent mcp` keep working from the command line.
 
 Development: `wails3 dev` (hot reload for the front end, restart on Go changes).
 

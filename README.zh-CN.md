@@ -167,8 +167,9 @@ go build -o bin/craft-agent .
 wails3 build
 ```
 
-> 二进制 embed 了 `frontend/dist`。为了 fresh clone 也能直接 `go build`，仓库里放了一张
-> 占位页；跑完第 2 步才会变成真正的界面。
+> 二进制 embed 了 `frontend/dist`。跳过第 2 步也能构建，但窗口里只会出现一张
+> 「界面还没构建」的说明页 —— `craft-agent apps` / `craft-agent mcp` 这类命令行
+> 功能不受影响。
 
 开发模式：`wails3 dev`（前端热更新，Go 改动自动重启）。
 
