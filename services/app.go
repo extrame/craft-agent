@@ -811,6 +811,88 @@ func (s *AppService) Version() string { return Version }
 // 页面上的 i18n 够不着它，只能由前端把当前语言报过来。
 func (s *AppService) SetTrayLanguage(lang string) { tray.SetLanguage(lang) }
 
+/* ---------------- MCP 运行时 ---------------- */
+
+// MCPSessionView 是一个 MCP 执行端会话的运行状态。MCP 进程由 AI 客户端拉起，
+// 和主程序是两个进程——主程序升级后旧会话还挂着旧版本，界面要能看见这件事。
+type MCPSessionView struct {
+	Session   string   `json:"session"`
+	PID       int      `json:"pid"`
+	Version   string   `json:"version"`
+	StartedAt string   `json:"startedAt"`
+	Apps      []string `json:"apps"`
+	Alive     bool     `json:"alive"`
+	// Outdated：会话版本与当前主程序不一致。升级主程序后旧会话继续跑旧代码，
+	// 直到用户重启 AI 客户端——这条提示就是那个重启按钮的替代品。
+	Outdated bool `json:"outdated"`
+}
+
+// MCPRuntime 返回落盘的 MCP 会话与它们的活性/版本状态。
+// 死掉超过 24 小时的条目在读时顺手清走——进程被 kill -9 时注销代码不会执行，
+// 不清理的话 runtime.json 会积累僵尸条目。
+func (s *AppService) MCPRuntime() []MCPSessionView {
+	raw, err := os.ReadFile(filepath.Join(s.host.DataDir(), "runtime.json"))
+	if err != nil {
+		return nil
+	}
+	var file struct {
+		Sessions map[string]struct {
+			PID       int       `json:"pid"`
+			Version   string    `json:"version"`
+			StartedAt time.Time `json:"startedAt"`
+			Apps      []string  `json:"apps"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(raw, &file); err != nil {
+		return nil
+	}
+	if len(file.Sessions) == 0 {
+		return nil
+	}
+
+	out := make([]MCPSessionView, 0, len(file.Sessions))
+	dead := []string{}
+	for id, e := range file.Sessions {
+		alive := pidAlive(e.PID)
+		if !alive && time.Since(e.StartedAt) > 24*time.Hour {
+			dead = append(dead, id)
+		}
+		out = append(out, MCPSessionView{
+			Session:   id,
+			PID:       e.PID,
+			Version:   e.Version,
+			StartedAt: e.StartedAt.Format("2006-01-02 15:04"),
+			Apps:      e.Apps,
+			Alive:     alive,
+			Outdated:  e.Version != "" && e.Version != Version,
+		})
+	}
+	sort.Strings(dead)
+	for _, id := range dead {
+		// 注意形状：文件是 {"sessions": {...}}，要删的是 sessions 里那一层。
+		var f struct {
+			Sessions map[string]json.RawMessage `json:"sessions"`
+		}
+		raw2, err := os.ReadFile(filepath.Join(s.host.DataDir(), "runtime.json"))
+		if err != nil {
+			continue
+		}
+		if json.Unmarshal(raw2, &f) != nil || f.Sessions == nil {
+			continue
+		}
+		delete(f.Sessions, id)
+		if len(f.Sessions) == 0 {
+			_ = os.Remove(filepath.Join(s.host.DataDir(), "runtime.json"))
+			continue
+		}
+		if outBytes, err := json.MarshalIndent(f, "", "  "); err == nil {
+			_ = os.WriteFile(filepath.Join(s.host.DataDir(), "runtime.json"), outBytes, 0o600)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Session < out[j].Session })
+	return out
+}
+
 /* ---------------- 内部 ---------------- */
 
 func (s *AppService) statusOf(id string) host.Status {

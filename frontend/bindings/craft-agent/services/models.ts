@@ -44,6 +44,25 @@ export interface InstallResult {
 }
 
 /**
+ * MCPSessionView 是一个 MCP 执行端会话的运行状态。MCP 进程由 AI 客户端拉起，
+ * 和主程序是两个进程——主程序升级后旧会话还挂着旧版本，界面要能看见这件事。
+ */
+export interface MCPSessionView {
+    "session": string;
+    "pid": number;
+    "version": string;
+    "startedAt": string;
+    "apps": string[] | null;
+    "alive": boolean;
+
+    /**
+     * Outdated：会话版本与当前主程序不一致。升级主程序后旧会话继续跑旧代码，
+     * 直到用户重启 AI 客户端——这条提示就是那个重启按钮的替代品。
+     */
+    "outdated": boolean;
+}
+
+/**
  * SessionView 是一条仍在线的 AI 会话。
  */
 export interface SessionView {

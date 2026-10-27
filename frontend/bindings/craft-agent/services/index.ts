@@ -10,6 +10,7 @@ export type {
     AnchorView,
     DocumentView,
     InstallResult,
+    MCPSessionView,
     SessionView,
     UpdateProgress,
     UpdateState

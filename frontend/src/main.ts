@@ -11,6 +11,7 @@ import type {
   AnchorView,
   DocumentView,
   InstallResult,
+  MCPSessionView,
   UpdateProgress,
   UpdateState,
 } from "../bindings/craft-agent/services/models";
@@ -61,6 +62,7 @@ const els = {
   filter: $("#journal-filter") as HTMLDivElement,
   langSwitch: $("#lang-switch") as HTMLDivElement,
   modal: $("#modal") as HTMLDivElement,
+  mcpRuntime: $("#mcp-runtime") as HTMLDivElement,
   mcpCode: $("#mcp-code") as HTMLPreElement,
   statusDir: $("#status-dir") as HTMLButtonElement,
   updateState: $("#update-state") as HTMLSpanElement,
@@ -97,6 +99,8 @@ let menuLoadToken = 0;
 // 只在选中应用与用户动作时读，不跟着 2 秒快照跑——它几乎不变。
 let anchor: AnchorView | null | undefined = undefined;
 let anchorBusy = false;
+// 主程序自己的版本：MCP 会话的版本偏差提示要用。
+let mainVersion = "";
 
 /* ---------------- 工具 ---------------- */
 
@@ -1122,14 +1126,78 @@ async function openMcp() {
   els.modal.hidden = false;
   if (mcpConfig) {
     els.mcpCode.textContent = mcpConfig;
+  } else {
+    els.mcpCode.textContent = t("modal.reading");
+  }
+  renderMcpRuntime(null);
+  void loadMcpRuntime();
+  if (!mcpConfig) {
+    try {
+      mcpConfig = await AppService.MCPConfig();
+      els.mcpCode.textContent = mcpConfig;
+    } catch (err) {
+      els.mcpCode.textContent = t("modal.readFail", { msg: errText(err) });
+    }
+  }
+}
+
+// MCP 执行端是 AI 客户端拉起的独立进程，主程序升级后旧会话还挂着旧版本。
+// 这块就是把「谁连着、版本对不对」摆到用户眼前——升级后重启 AI 客户端，
+// 提示就消失了。null 表示还在读。
+async function loadMcpRuntime() {
+  let views: MCPSessionView[] | null;
+  try {
+    views = await AppService.MCPRuntime();
+  } catch {
+    views = null;
+  }
+  renderMcpRuntime(views ?? []);
+}
+
+function renderMcpRuntime(views: MCPSessionView[] | null) {
+  const box = els.mcpRuntime;
+  box.replaceChildren();
+  const head = document.createElement("div");
+  head.className = "mcp-runtime-head";
+  head.textContent = t("mcp.runtime");
+  box.append(head);
+
+  if (views === null) {
+    const p = document.createElement("p");
+    p.className = "hint";
+    p.textContent = t("anchor.loading");
+    box.append(p);
     return;
   }
-  els.mcpCode.textContent = t("modal.reading");
-  try {
-    mcpConfig = await AppService.MCPConfig();
-    els.mcpCode.textContent = mcpConfig;
-  } catch (err) {
-    els.mcpCode.textContent = t("modal.readFail", { msg: errText(err) });
+  if (views.length === 0) {
+    const p = document.createElement("p");
+    p.className = "hint";
+    p.textContent = t("mcp.none");
+    box.append(p);
+    return;
+  }
+  for (const v of views) {
+    const row = document.createElement("div");
+    row.className = "mcp-runtime-row" + (v.alive ? "" : " is-dead");
+
+    const name = document.createElement("span");
+    name.className = "mcp-runtime-session";
+    name.textContent = v.session;
+    const ver = document.createElement("span");
+    ver.className = "mcp-runtime-version";
+    ver.textContent = v.version ? `v${v.version}` : "—";
+    const state = document.createElement("span");
+    state.className = "mcp-runtime-state" + (v.outdated && v.alive ? " is-warn" : "");
+    state.textContent = v.alive ? t("mcp.alive") : t("mcp.dead");
+    row.append(name, ver, state);
+    box.append(row);
+
+    if (v.outdated && v.alive) {
+      const warn = document.createElement("p");
+      warn.className = "mcp-runtime-warn";
+      warn.textContent = t("mcp.outdated", { v: v.version, cur: mainVersion });
+      box.append(warn);
+    }
   }
 }
 
@@ -1259,6 +1327,7 @@ async function boot() {
   try {
     els.statusDir.textContent = await AppService.DataDir();
     els.statusVersion.textContent = `v${await AppService.Version()}`;
+    mainVersion = await AppService.Version();
     autoInstall = await AppService.CanAutoInstall();
   } catch {
     /* 状态栏拿不到不影响使用 */

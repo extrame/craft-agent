@@ -122,6 +122,13 @@ directory:
 - **`anchors.json`** — the file ↔ document mapping the write guard maintains, per app.
   Both sides re-read it on every access, so the window can show it and let you release
   an anchor; a release takes effect on a live MCP session immediately.
+- **`runtime.json`** — each MCP session's on-disk self-report (pid, version, started at).
+  The MCP process is spawned by the AI client and shares no memory with this app: after
+  an upgrade the binary on disk is new, but a session that is already running keeps
+  running the old code. The MCP config dialog lists these sessions and flags the ones
+  whose version lags the app — **restart your AI client to pick it up**. The app does
+  not kill and restart MCP sessions on upgrade: the stdio pipe belongs to the client,
+  and cutting it from outside just hands the client an error.
 
 ## Layout
 
@@ -224,6 +231,7 @@ Windows `%APPDATA%\CraftAgent\`, Linux `~/.local/share/craft-agent/`:
 registry.json     endpoints, PIDs and control tokens of running apps
 sessions.jsonl    activity log
 anchors.json      file ↔ document anchors, one per app (0600)
+runtime.json      live MCP sessions: pid, version, started at
 menus/            one preloaded menu tree per app, keyed by app version
 shots/            screenshots taken through craft_screenshot
 run/              rendezvous files for apps that pick their own port

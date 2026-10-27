@@ -109,6 +109,15 @@ func Serve(ctx context.Context, opts Options) error {
 	// 会话起止进流水：界面上「现在有几个 AI 会话连着」靠这两条。
 	b.record("", "session-start", "", true, strings.Join(appNames(opts.Apps), ", "), 0)
 	defer b.record("", "session-end", "", true, "", 0)
+	// 落盘自述：窗口靠 runtime.json 看见「有几个 MCP 会话、什么版本」，升级后
+	// 版本偏了就在界面提示重启 AI 客户端。退出时注销；kill -9 的由 GUI 探活兜底。
+	writeRuntime(opts.Host.DataDir(), opts.Session, runtimeEntry{
+		PID:       os.Getpid(),
+		Version:   opts.Version,
+		StartedAt: time.Now(),
+		Apps:      appNames(opts.Apps),
+	})
+	defer clearRuntime(opts.Host.DataDir(), opts.Session)
 
 	// 已经开着的实例先接管，省掉模型第一次调用时的启动等待。
 	// 失败不报错：app 没装是常态。

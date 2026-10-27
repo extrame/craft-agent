@@ -777,6 +777,59 @@ button { font-family: inherit; }
 
 .anchor-doc .btn { justify-self: start; margin-top: 2px; }
 
+/* ---- MCP 运行时（弹窗内） ---- */
+
+.mcp-runtime {
+    display: grid;
+    gap: 5px;
+    margin-bottom: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--line-soft);
+    border-radius: 8px;
+    background: var(--panel-2);
+}
+
+.mcp-runtime-head {
+    font-size: 10.5px;
+    color: var(--ink-3);
+    letter-spacing: 0.02em;
+}
+
+.mcp-runtime-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 60px 70px;
+    align-items: baseline;
+    gap: 10px;
+    font-size: 11.5px;
+}
+
+.mcp-runtime-session {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--ink);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mcp-runtime-version {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--ink-3);
+}
+
+.mcp-runtime-state { text-align: right; font-size: 10.5px; color: var(--ink-3); }
+.mcp-runtime-state.is-warn { color: var(--warn); }
+
+.mcp-runtime-row.is-dead { opacity: 0.55; }
+
+.mcp-runtime-warn {
+    margin: 0;
+    font-size: 10.5px;
+    color: var(--warn);
+    line-height: 1.5;
+}
+
 /* ---- 按钮 ---- */
 
 .btn {

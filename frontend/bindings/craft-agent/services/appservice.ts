@@ -121,6 +121,15 @@ export function MCPConfig(): $CancellablePromise<string> {
 }
 
 /**
+ * MCPRuntime 返回落盘的 MCP 会话与它们的活性/版本状态。
+ * 死掉超过 24 小时的条目在读时顺手清走——进程被 kill -9 时注销代码不会执行，
+ * 不清理的话 runtime.json 会积累僵尸条目。
+ */
+export function MCPRuntime(): $CancellablePromise<$models.MCPSessionView[] | null> {
+    return $Call.ByID(4117816460);
+}
+
+/**
  * Menu 返回预加载好的统一菜单模型。
  * 
  * 只读缓存，不碰应用：界面在选中应用的一瞬间就会调它，要是这里顺手 Ensure，
