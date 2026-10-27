@@ -58,6 +58,30 @@ This project solves **letting an agent act, with a human able to see it**:
 | Agent access | ❌ | ✅ one MCP server for the whole suite |
 | Audit trail | ❌ | ✅ cross-process log, AI actions separated from local ones |
 
+## Why not the official `*-cli mcp`
+
+Every Craft app already ships its own MCP server: `<app>-cli mcp`. It works, and it is the
+right shape when the agent is meant to work alone. This project exists for the other case —
+**when a human is going to keep working in the same document while the agent does**.
+
+| | `<app>-cli mcp` (official) | `craft-agent mcp` |
+|---|---|---|
+| Default mode | **headless** — an in-process engine, no window; the agent edits files nobody can see | the desktop app itself, on screen |
+| How you watch | you don't, while it runs — feedback is a rendered image *after* the fact | the real window updates live as commands land |
+| Attaching to a visible app | exists, but the option name differs per app (`--bridge` / `--connect` / `--attach`) and you assemble it by hand: launch with `--control`, then point the CLI at the port | automatic: the GUI launches the app and writes `registry.json`; the MCP process attaches to *that* instance |
+| Servers | thirteen, one binary and one tool-naming generation per app | one server for the whole suite |
+| Where the truth lives | headless edits its own copy; reconciling with what you have open is on you | agent and human touch the same process and the same document |
+| Human-visible state | none | app list, endpoints, open documents, menu trees, file anchors, and a log that separates AI actions from your own clicks |
+
+The visual/non-visual split is not cosmetic. In headless mode the human and the agent hold
+two different copies of the work: the agent's result reaches you as an exported file or a
+rendered picture, and any concurrent editing is a merge you perform afterwards. Here both
+sides sit in front of one running app — the AI comes in through MCP, you come in through the
+app's own window, and the document guard keeps the agent writing into the document you are
+looking at. The official attach mode narrows the gap, but it still leaves you the wiring and
+gives neither side a log, a guard, or a menu model — which is the part this project adds
+around the same control channel.
+
 ## The protocol, briefly
 
 Full write-up with measured behaviour: [`docs/control-protocol.md`](docs/control-protocol.md).
