@@ -126,7 +126,7 @@ func Install(ctx context.Context, c *Client, o Options) (Result, error) {
 	if _, err := os.Lstat(destBundle); err == nil {
 		backup = fmt.Sprintf("%s.old-%s", destBundle, now().Format("20060102-150405"))
 		if err := os.Rename(destBundle, backup); err != nil {
-			return Result{}, fmt.Errorf("无法移开旧版本（应用可能还在运行）: %w", err)
+			return Result{}, fmt.Errorf("无法移开旧版本（可能还在运行；macOS 15 起还要求「系统设置 → 隐私与安全性 → App 管理」里允许本程序改动其他应用）: %w", err)
 		}
 	}
 	if err := os.Rename(staged, destBundle); err != nil {

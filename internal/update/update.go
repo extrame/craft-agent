@@ -472,8 +472,7 @@ func (c *Client) fetch(ctx context.Context, a Asset, dest string, onProgress fun
 		os.Remove(part)
 		return fmt.Errorf("%w：下到 %s…，发布声明 %s…", errChecksum, got[:12], a.SHA256[:12])
 	}
-	if err := os.Rename(part, dest); err != nil {
-		os.Remove(part)
+	if err := moveIntoPlace(part, dest); err != nil {
 		return err
 	}
 	if onProgress != nil {
@@ -481,6 +480,74 @@ func (c *Client) fetch(ctx context.Context, a Asset, dest string, onProgress fun
 		onProgress(size, size)
 	}
 	return nil
+}
+
+// moveIntoPlace 把校验过的 .part 换成正式文件名。
+//
+// 通常一次 rename 就够。但 rename 会因为「目标这一刻被谁按着」而失败：几十上百
+// 兆的文件刚落地，索引、病毒扫描、Gatekeeper 的来源标注都可能伸一下手，几秒后
+// 就松开了。这类失败等一下再试就过去了。
+//
+// 真正要紧的是失败时**别删 .part**。删掉等于让用户把整个包从零再下一遍，而错的
+// 只是一次改名 —— 这是这个函数存在的全部理由。
+func moveIntoPlace(part, dest string) error {
+	var last error
+	for attempt := 0; attempt <= len(moveWaits); attempt++ {
+		if attempt > 0 {
+			time.Sleep(moveWaits[attempt-1])
+		}
+		err := os.Rename(part, dest)
+		if err == nil {
+			return nil
+		}
+		if attempt == 0 {
+			log.Printf("%s 改名失败（%v），稍后重试", filepath.Base(dest), err)
+		}
+		last = err
+		if attempt == 1 {
+			// 挡路的可能正是旧的那一份（另一个进程写下、带着来源标记之类）。
+			// 它只是可重下的缓存，删掉比守着它划算。
+			if rmErr := os.Remove(dest); rmErr != nil && !os.IsNotExist(rmErr) {
+				log.Printf("删除旧包 %s 失败，继续尝试改名：%v", filepath.Base(dest), rmErr)
+			}
+		}
+	}
+	// 同一目录里的 rename 都不通，退一步复制：多写一遍，但不必重新下载。
+	if err := copyFile(part, dest); err != nil {
+		return fmt.Errorf("下载完成但改名失败，已保留 %s（重试不会重新下载）：%v；改用复制也失败：%w",
+			filepath.Base(part), last, err)
+	}
+	os.Remove(part)
+	return nil
+}
+
+// moveWaits 是改名重试的间隔，累计六秒多。文件刚落地时被索引或扫描按住一下
+// 就放开，这个尺度够用；测试里会调小。
+var moveWaits = []time.Duration{200 * time.Millisecond, 400 * time.Millisecond, 800 * time.Millisecond, 1600 * time.Millisecond, 3200 * time.Millisecond}
+
+// copyFile 逐块复制并落盘。给 rename 不可用的兜底路径用。
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		os.Remove(dst)
+		return err
+	}
+	if err := out.Sync(); err != nil {
+		out.Close()
+		os.Remove(dst)
+		return err
+	}
+	return out.Close()
 }
 
 // attempt 发一次请求，把从 have 开始的内容追加到 part。

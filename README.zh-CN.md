@@ -358,7 +358,7 @@ WordCraft、GridCraft 可能根本没有 `text.selectAll`；PdfCraft 的「页�
 | 步骤 | 做法 | 失败时 |
 |---|---|---|
 | 挑资产 | 先按 `应用-版本-平台-架构.ext` 精确匹配，退化为按后缀挑，排除 `-cli-` / `-web-` / `SHA256SUMS` / `.zsync` | 报「没有适用于本平台的安装包」 |
-| 下载 | 流式写 `.part`；断了带 `Range` 从断点续，1s→30s 退避重试；下完算 SHA-256 | 连续 8 次没有进展才放弃（`.part` 保留）；只有校验不符才清掉从零重来 |
+| 下载 | 流式写 `.part`；断了带 `Range` 从断点续，1s→30s 退避重试；下完算 SHA-256，通过后改名为正式文件 | 连续 8 次没有进展才放弃；改名被挡会重试、再退化成复制，两种都不动已下完的 `.part`；只有校验不符才清掉从零重来 |
 | 校验和来源 | GitHub 资产的 `digest`；没有就取同一发布的 `SHA256SUMS.txt`；两处都没有 → **拒绝安装** | 明确说缺校验和，不静默放行 |
 | 地址白名单 | 必须是 `https://github.com/<该应用仓库>/releases/download/…`，重定向只许落 GitHub 域名 | 可疑条目直接丢弃，不进候选 |
 | 挂载 | `hdiutil attach -nobrowse -readonly -noverify` 到本次专用的空目录 | 重试 4 轮（diskimages-helper 一次只接一个镜像） |

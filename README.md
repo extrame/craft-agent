@@ -380,7 +380,7 @@ The order is fixed, and any failure stops where it happened:
 | Step | What happens | On failure |
 |---|---|---|
 | Pick asset | exact `app-version-platform-arch.ext`, then suffix match; excludes `-cli-`, `-web-`, `SHA256SUMS`, `.zsync` | "no installer for this platform" |
-| Download | streamed to `.part`; a dropped connection resumes with `Range`, backing off 1s→30s; hashed when complete | gives up only after eight attempts in a row make no progress (the `.part` stays); a checksum mismatch alone triggers a fresh start |
+| Download | streamed to `.part`; a dropped connection resumes with `Range`, backing off 1s→30s; hashed when complete, then renamed into place | gives up only after eight attempts in a row make no progress; a blocked rename is retried and finally falls back to copying, neither of which touches the finished `.part`; a checksum mismatch alone triggers a fresh start |
 | Checksum source | the asset's `digest`, else `SHA256SUMS.txt` from the same release; neither → **refuse to install** | says the checksum is missing, does not proceed |
 | URL allowlist | must be `https://github.com/<that app's repo>/releases/download/…`, redirects only to GitHub hosts | suspicious entries are dropped from the candidates |
 | Mount | `hdiutil attach -nobrowse -readonly -noverify` into a scratch directory | retries four times; diskimages-helper accepts one image at a time |
