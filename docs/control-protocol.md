@@ -74,6 +74,23 @@ can drive any app in the suite without per-app code:
 
 DeckCraft 0.11.1 returns **377** entries. `params` is prose documentation, not a schema.
 
+### The same field, three encodings
+
+That shape is DeckCraft's. FigCraft 0.11.2 returns 597 entries with two of those fields
+encoded differently, and `enabled` missing altogether:
+
+| Field | DeckCraft | FigCraft |
+|---|---|---|
+| `menu` | `["Slide","New"]` | `"Edit"`, or `null` |
+| `shortcut` | `"⌘⇧N"` / `""` | `"Cmd+Z"`, or `null` |
+| `enabled` | `true` / `false` | absent — reports `undoable` instead |
+
+This matters more than it looks. `encoding/json` stops at the first wrong-typed field, so a
+single `"menu": "Edit"` does not degrade into a missing menu — it fails decoding **the entire
+table**, and the caller sees "cannot unmarshal string into Go struct field" instead of 597
+commands. Decode `menu` as a union (string, array, or null), treat an absent `enabled` as
+unknown rather than false, and keep `id` as the only authority on whether a command exists.
+
 `enabled` is **runtime context, not existence**. With no text selected, `format.*` and
 `text.selectAll` report `enabled: false`. Filtering a list of available commands by
 `enabled` therefore hides real commands from a model — existence is decided by `id` alone,
