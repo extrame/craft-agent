@@ -1,6 +1,12 @@
 import { Events } from "@wailsio/runtime";
 import { AppService } from "../bindings/craft-agent/services";
 import type { Status } from "../bindings/craft-agent/internal/host/models";
+import type {
+  Item as MenuItem,
+  Menu as MenuModel,
+  Node as MenuNode,
+  Summary as MenuSummary,
+} from "../bindings/craft-agent/internal/menu/models";
 import type { DocumentView, InstallResult, UpdateProgress, UpdateState } from "../bindings/craft-agent/services/models";
 import { getLang, initI18n, locale, onLangChange, setLang, t, type Lang } from "./i18n";
 
@@ -35,6 +41,10 @@ const els = {
   actions: $("#detail-actions") as HTMLDivElement,
   statRow: $("#stat-row") as HTMLDivElement,
   docBody: $("#doc-body") as HTMLDivElement,
+  menuBody: $("#menu-body") as HTMLDivElement,
+  menuNote: $("#menu-note") as HTMLSpanElement,
+  menuSearch: $("#menu-search") as HTMLInputElement,
+  btnMenuRefresh: $("#btn-menu-refresh") as HTMLButtonElement,
   btnInspect: $("#btn-inspect") as HTMLButtonElement,
   btnUpdates: $("#btn-updates") as HTMLButtonElement,
   sessions: $("#sessions") as HTMLUListElement,
@@ -66,6 +76,15 @@ let checking = false;
 let install: UpdateProgress | null = null;
 // 本平台能不能代用户完成安装（macOS 可以；其他平台只做到下载并校验）。
 let autoInstall = false;
+// 菜单：摘要随状态推送，模型只在选中应用时读一次。分开是为了不让 600 条命令
+// 跟着两秒一次的快照来回跑。
+let menuSummaries: MenuSummary[] = [];
+let menuSummaryKey = "";
+let menuModel: MenuModel | null = null;
+let menuQuery = "";
+let menuOpen = new Set<string>();
+let menuBusy = false;
+let menuLoadToken = 0;
 
 /* ---------------- 工具 ---------------- */
 
@@ -111,15 +130,18 @@ function taglineOf(st: Status): string {
   return getLang() === "zh" ? st.app.tagline : st.app.taglineEn || st.app.tagline;
 }
 
-// 控制通道的形态是数据，文案在界面这层拼 —— 后端只给 transport/port，
+// 控制通道的形态是数据，文案在界面这层拼 —— 后端只给 control/port，
 // 否则同一个「未确认」要在 Go 里再维护一份英文。
+//
+// 两种形态不描述细节：端口模式下令牌可能有也可能没有（取决于应用版本），
+// 会合文件模式下端口和令牌都是应用当下写给我们的。
 function controlText(st: Status): string {
-  // bindings 把 Transport 生成为 TS enum，直接和字符串比会被判为无交集，所以先取原始值。
-  switch (st.app.transport as string | undefined) {
-    case "tcp":
-      return st.app.defaultPort ? t("control.tcp", { port: st.app.defaultPort }) : t("control.tcpDynamic");
-    case "unix":
-      return t("control.unix");
+  // bindings 把 Control 生成为 TS enum，直接和字符串比会被判为无交集，所以先取原始值。
+  switch (st.app.control as string | undefined) {
+    case "port":
+      return st.app.port ? t("control.tcp", { port: st.app.port }) : t("control.tcpDynamic");
+    case "file":
+      return t("control.file");
     default:
       return t("control.unknown");
   }
@@ -194,6 +216,13 @@ function selectApp(id: string) {
   els.empty.hidden = true;
   els.detail.hidden = false;
   els.docBody.replaceChildren(hintLine(t("doc.loading")));
+  // 换应用就换树：展开状态与搜索词都是上一个应用的，带过来只会让人困惑。
+  menuModel = null;
+  menuQuery = "";
+  menuOpen.clear();
+  els.menuSearch.value = "";
+  renderMenu();
+  void loadMenu(id);
   void inspect();
 }
 
@@ -602,6 +631,243 @@ function metric(label: string, value: string): HTMLDivElement {
   return box;
 }
 
+/* ---------------- 菜单（预加载） ---------------- */
+
+function menuSummaryKeyOf(list: MenuSummary[]): string {
+  return JSON.stringify(list.map((s) => [s.app, s.commands, s.sections, s.fetchedAt, s.stale, s.error ?? ""]));
+}
+
+// 摘要由后端每 2 秒推一次。变了才重读被选中应用的模型，否则光刷新数字。
+function applyMenus(next: MenuSummary[]) {
+  const key = menuSummaryKeyOf(next);
+  if (key === menuSummaryKey) return;
+  menuSummaryKey = key;
+  menuSummaries = next;
+  if (selected) void loadMenu(selected);
+  renderMenu();
+}
+
+async function loadMenu(id: string) {
+  const token = ++menuLoadToken;
+  const sum = menuSummaries.find((s) => s.app === id);
+  if (!sum || sum.commands === 0) {
+    if (token === menuLoadToken) {
+      menuModel = null;
+      renderMenu();
+    }
+    return;
+  }
+  try {
+    const model = await AppService.Menu(id);
+    if (token !== menuLoadToken) return;
+    menuModel = model && model.commands > 0 ? model : null;
+  } catch (err) {
+    if (token !== menuLoadToken) return;
+    menuModel = null;
+    toast(errText(err), true);
+  }
+  renderMenu();
+}
+
+// 「重新抓取」是唯一会碰应用的入口：应用没开着时后端会启动它。
+async function refreshMenu() {
+  if (!selected || menuBusy) return;
+  const id = selected;
+  menuBusy = true;
+  renderMenu();
+  try {
+    menuModel = await AppService.RefreshMenu(id);
+    menuSummaries = (await AppService.Menus()) ?? [];
+    menuSummaryKey = menuSummaryKeyOf(menuSummaries);
+    menuOpen.clear();
+    toast(t("menu.refreshed", { n: menuModel.commands }));
+  } catch (err) {
+    toast(t("menu.failed", { msg: errText(err) }), true);
+  } finally {
+    menuBusy = false;
+    if (selected === id) renderMenu();
+  }
+}
+
+function renderMenu() {
+  const st = selected ? statusOf(selected) : undefined;
+  // 展开/收起会整棵树重画，滚动位置得自己留着。
+  const scrollTop = els.menuBody.scrollTop;
+  els.menuBody.replaceChildren();
+  els.menuNote.textContent = "";
+  els.menuNote.classList.remove("is-warn", "menu-note");
+  els.menuNote.classList.add("menu-note");
+  els.btnMenuRefresh.disabled = !st || menuBusy;
+  if (!st) return;
+
+  const sum = menuSummaries.find((s) => s.app === st.app.id);
+  if (sum && sum.commands > 0) {
+    const parts = [t("menu.counts", { n: sum.commands, s: sum.sections })];
+    if (sum.grouped > 0) parts.push(t("menu.groupedNote", { n: sum.grouped }));
+    parts.push(t("menu.fetchedAt", { time: shortTime(sum.fetchedAt) }));
+    if (sum.stale) {
+      els.menuNote.classList.add("is-warn");
+      parts.push(t("menu.stale"));
+    }
+    els.menuNote.textContent = parts.join(" · ");
+    if (sum.error) els.menuNote.title = sum.error;
+  }
+
+  if (menuBusy) {
+    els.menuBody.append(hintLine(t("menu.fetching")));
+    return;
+  }
+
+  if (!menuModel || !menuModel.commands) {
+    const box = document.createElement("div");
+    box.className = "menu-empty";
+    const text = document.createElement("span");
+    text.textContent = sum?.error ? t("menu.error", { msg: sum.error }) : t("menu.empty");
+    const btn = actionButton(t("menu.preload"), () => void refreshMenu(), "primary");
+    btn.classList.add("mini");
+    box.append(text, btn);
+    els.menuBody.append(box);
+    return;
+  }
+
+  if (menuQuery.trim()) {
+    renderMenuHits(menuModel, menuQuery);
+  } else {
+    const tree = document.createElement("div");
+    tree.className = "menu-tree";
+    for (const section of menuModel.sections ?? []) {
+      if (section) tree.append(menuNodeEl(section, 0));
+    }
+    els.menuBody.append(tree);
+  }
+  els.menuBody.scrollTop = scrollTop;
+}
+
+function menuNodeEl(node: MenuNode, depth: number): HTMLElement {
+  const path = (node.path ?? []).join("/");
+  const items = node.items ?? [];
+  const children = (node.children ?? []).filter((c): c is MenuNode => !!c);
+  const hasBody = items.length > 0 || children.length > 0;
+  const open = menuOpen.has(path);
+
+  const wrap = document.createElement("div");
+  const head = document.createElement("button");
+  head.className = open ? "menu-node is-open" : "menu-node";
+  head.style.paddingLeft = `${10 + depth * 16}px`;
+
+  const caret = document.createElement("span");
+  caret.className = "menu-caret";
+  caret.textContent = hasBody ? "▶" : "";
+  const name = document.createElement("span");
+  name.className = "menu-label";
+  name.textContent = node.name || t("menu.unfiled");
+  head.append(caret, name);
+
+  if (node.grouped) {
+    // 这一层不是应用给的菜单，是按命令 id 前缀补的 —— 界面上要说清楚。
+    const badge = document.createElement("span");
+    badge.className = "menu-badge";
+    badge.textContent = t("menu.prefixBadge");
+    head.append(badge);
+  }
+
+  const count = document.createElement("span");
+  count.className = "menu-count";
+  count.textContent = String(node.count);
+  head.append(count);
+
+  if (hasBody) {
+    head.title = path;
+    head.addEventListener("click", () => {
+      if (menuOpen.has(path)) menuOpen.delete(path);
+      else menuOpen.add(path);
+      renderMenu();
+    });
+  } else {
+    head.disabled = true;
+  }
+  wrap.append(head);
+
+  if (open) {
+    for (const item of items) wrap.append(menuItemEl(item, depth + 1));
+    for (const child of children) wrap.append(menuNodeEl(child, depth + 1));
+  }
+  return wrap;
+}
+
+function menuItemEl(item: MenuItem, depth: number): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "menu-item";
+  row.style.paddingLeft = `${10 + depth * 16}px`;
+
+  const label = document.createElement("span");
+  label.className = "menu-item-label";
+  label.textContent = item.label || item.id;
+  const id = document.createElement("span");
+  id.className = "menu-item-id";
+  id.textContent = item.id;
+  const key = document.createElement("span");
+  key.className = "menu-item-key";
+  key.textContent = item.shortcut ?? "";
+
+  const tip = [item.id];
+  if (item.params) tip.push(item.params);
+  if (item.aliases && item.aliases.length) tip.push(`${t("menu.aliases")}: ${item.aliases.join(", ")}`);
+  row.title = tip.join("\n");
+  row.append(label, id, key);
+  return row;
+}
+
+function menuItemMatches(item: MenuItem, q: string): boolean {
+  const hay = [item.id, item.label, item.shortcut ?? "", ...(item.path ?? []), ...(item.aliases ?? [])];
+  return hay.some((s) => s.toLowerCase().includes(q));
+}
+
+function renderMenuHits(model: MenuModel, query: string) {
+  const q = query.trim().toLowerCase();
+  const hits: MenuItem[] = [];
+  const visit = (nodes: (MenuNode | null)[] | null | undefined) => {
+    for (const n of nodes ?? []) {
+      if (!n) continue;
+      for (const item of n.items ?? []) if (menuItemMatches(item, q)) hits.push(item);
+      visit(n.children);
+    }
+  };
+  visit(model.sections);
+
+  if (hits.length === 0) {
+    els.menuBody.append(hintLine(t("menu.noMatch", { q: query.trim() })));
+    return;
+  }
+  const box = document.createElement("div");
+  for (const item of hits.slice(0, 120)) {
+    const row = document.createElement("div");
+    row.className = "menu-hit";
+    const main = document.createElement("div");
+    main.className = "menu-hit-main";
+    const title = document.createElement("div");
+    title.className = "menu-hit-title";
+    const label = document.createElement("span");
+    label.className = "menu-item-label";
+    label.textContent = item.label || item.id;
+    const id = document.createElement("span");
+    id.className = "menu-item-id";
+    id.textContent = item.id;
+    title.append(label, id);
+    const crumb = document.createElement("div");
+    crumb.className = "menu-crumb";
+    crumb.textContent = (item.path ?? []).join(" › ");
+    main.append(title, crumb);
+    const key = document.createElement("span");
+    key.className = "menu-item-key";
+    key.textContent = item.shortcut ?? "";
+    row.append(main, key);
+    box.append(row);
+  }
+  if (hits.length > 120) box.append(hintLine(t("menu.moreHits", { n: hits.length - 120 })));
+  els.menuBody.append(box);
+}
+
 /* ---------------- AI 会话（从流水推导） ---------------- */
 
 function renderSessions() {
@@ -730,6 +996,8 @@ function labelOf(e: JournalEntry): string {
     case "update":
       // 同一种 kind 里，「查」和「装」是两件事，流水里分开写。
       return e.command === "install" ? t("journal.install") : t("journal.update");
+    case "menu":
+      return t("journal.menu");
     case "command":
       return e.command || t("journal.command");
     default:
@@ -781,6 +1049,7 @@ function switchLang(lang: Lang) {
   if (selected) renderDetail();
   renderSessions();
   renderJournal();
+  renderMenu();
   renderUpdateState();
   if (!els.modal.hidden && !mcpConfig) {
     els.mcpCode.textContent = t("modal.reading");
@@ -791,6 +1060,11 @@ function switchLang(lang: Lang) {
 
 function bind() {
   els.btnInspect.addEventListener("click", () => void inspect());
+  els.btnMenuRefresh.addEventListener("click", () => void refreshMenu());
+  els.menuSearch.addEventListener("input", () => {
+    menuQuery = els.menuSearch.value;
+    renderMenu();
+  });
   els.btnUpdates.addEventListener("click", () => void checkUpdates());
   $("#btn-mcp").addEventListener("click", () => void openMcp());
   $("#btn-modal-close").addEventListener("click", () => {
@@ -824,6 +1098,10 @@ function bind() {
     const data = ev.data as Status[] | undefined;
     if (Array.isArray(data)) applyStatus(data);
   });
+  Events.On("craft:menus", (ev) => {
+    const data = ev.data as MenuSummary[] | undefined;
+    if (Array.isArray(data)) applyMenus(data);
+  });
   Events.On("craft:journal", (ev) => {
     const data = ev.data as JournalEntry[] | undefined;
     if (Array.isArray(data)) applyJournal(data);
@@ -853,6 +1131,7 @@ function bind() {
     if (selected) renderDetail();
     renderSessions();
     renderJournal();
+    renderMenu();
     renderUpdateState();
   });
 }
@@ -873,6 +1152,12 @@ async function boot() {
   // 流水与状态都由后端每 2 秒推一次；这里只准备空态。
   applyJournal([]);
   await refresh();
+  try {
+    menuSummaries = (await AppService.Menus()) ?? [];
+    menuSummaryKey = menuSummaryKeyOf(menuSummaries);
+  } catch {
+    /* 菜单摘要是辅助信息，拿不到不影响使用 */
+  }
   await loadUpdateState();
   // 后端启动时已经在后台查过一次；这里隔一会儿再读一次缓存，把结果显示到状态栏。
   window.setTimeout(() => void loadUpdateState(), 4000);

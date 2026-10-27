@@ -38,6 +38,7 @@ const zh: Dict = {
 
   "panel.document": "文档状态",
   "panel.refresh": "刷新",
+  "panel.menu": "菜单",
   "panel.sessions": "AI 会话",
   "panel.journal": "会话操作流",
   "filter.all": "全部",
@@ -79,6 +80,24 @@ const zh: Dict = {
   "doc.noPath": "（未保存到文件）",
   "doc.noData": "这个应用没有回报文档结构。",
 
+  "menu.counts": "{n} 条命令 · {s} 个菜单",
+  "menu.groupedNote": "{n} 条按前缀归组",
+  "menu.fetchedAt": "{time} 抓取",
+  "menu.stale": "应用已升级，建议重新抓取",
+  "menu.search": "搜索命令、快捷键…",
+  "menu.refresh": "重新抓取",
+  "menu.fetching": "正在向应用要命令表…",
+  "menu.empty": "这个应用还没有预加载菜单。抓一次需要应用在运行。",
+  "menu.preload": "预加载菜单",
+  "menu.refreshed": "已抓取 {n} 条命令",
+  "menu.failed": "抓取菜单失败：{msg}",
+  "menu.error": "菜单读取失败：{msg}",
+  "menu.noMatch": "没有匹配「{q}」的命令",
+  "menu.moreHits": "还有 {n} 条未显示，换个更具体的词",
+  "menu.unfiled": "未归类",
+  "menu.prefixBadge": "按前缀",
+  "menu.aliases": "别名",
+
   "sessions.note": "{n} 在线",
   "sessions.empty": "还没有第三方 AI 连上来。用右上角「MCP 配置」把它接进来。",
   "sessions.actions": "{n} 个动作",
@@ -89,6 +108,7 @@ const zh: Dict = {
   "journal.launch": "启动",
   "journal.connect": "已连接",
   "journal.disconnect": "已断开",
+  "journal.menu": "预加载菜单",
   "journal.command": "执行命令",
   "journal.update": "检查更新",
   "journal.install": "安装更新",
@@ -126,7 +146,7 @@ const zh: Dict = {
 
   "control.tcpDynamic": "TCP（端口由宿主分配）",
   "control.tcp": "TCP 127.0.0.1:{port}",
-  "control.unix": "Unix socket",
+  "control.file": "会合文件（应用自选端口）",
   "control.unknown": "未确认",
   "version.unknown": "版本未知",
   "version.source.bundle": "应用包",
@@ -158,6 +178,7 @@ const en: Dict = {
 
   "panel.document": "Document",
   "panel.refresh": "Refresh",
+  "panel.menu": "Menu",
   "panel.sessions": "AI sessions",
   "panel.journal": "Activity",
   "filter.all": "All",
@@ -199,6 +220,24 @@ const en: Dict = {
   "doc.noPath": "(not saved to a file)",
   "doc.noData": "This app did not report a document.",
 
+  "menu.counts": "{n} commands · {s} sections",
+  "menu.groupedNote": "{n} grouped by prefix",
+  "menu.fetchedAt": "fetched {time}",
+  "menu.stale": "app was upgraded — fetch again",
+  "menu.search": "Search commands, shortcuts…",
+  "menu.refresh": "Fetch again",
+  "menu.fetching": "Asking the app for its command table…",
+  "menu.empty": "No menu preloaded for this app yet. Fetching needs the app running.",
+  "menu.preload": "Preload menu",
+  "menu.refreshed": "Fetched {n} commands",
+  "menu.failed": "Could not fetch the menu: {msg}",
+  "menu.error": "Menu unavailable: {msg}",
+  "menu.noMatch": "Nothing matches “{q}”",
+  "menu.moreHits": "{n} more not shown — narrow the search",
+  "menu.unfiled": "Unfiled",
+  "menu.prefixBadge": "prefix",
+  "menu.aliases": "alias",
+
   "sessions.note": "{n} online",
   "sessions.empty": "No third-party AI connected yet. Use “MCP setup” at the top right to plug one in.",
   "sessions.actions": "{n} actions",
@@ -209,6 +248,7 @@ const en: Dict = {
   "journal.launch": "Launch",
   "journal.connect": "Connected",
   "journal.disconnect": "Disconnected",
+  "journal.menu": "Preload menu",
   "journal.command": "Command",
   "journal.update": "Update check",
   "journal.install": "Install update",
@@ -246,7 +286,7 @@ const en: Dict = {
 
   "control.tcpDynamic": "TCP (port assigned by host)",
   "control.tcp": "TCP 127.0.0.1:{port}",
-  "control.unix": "Unix socket",
+  "control.file": "Rendezvous file (app picks the port)",
   "control.unknown": "Not confirmed",
   "version.unknown": "Version unknown",
   "version.source.bundle": "App bundle",
@@ -315,6 +355,10 @@ export function applyStatic(root: ParentNode = document): void {
   root.querySelectorAll<HTMLElement>("[data-i18n-title]").forEach((el) => {
     const key = el.dataset.i18nTitle;
     if (key) el.title = t(key);
+  });
+  root.querySelectorAll<HTMLElement>("[data-i18n-placeholder]").forEach((el) => {
+    const key = el.dataset.i18nPlaceholder;
+    if (key) el.setAttribute("placeholder", t(key));
   });
 }
 

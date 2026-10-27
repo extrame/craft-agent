@@ -552,7 +552,7 @@ func (b *bridge) commandSet(ctx context.Context, app craft.App, c *control.Clien
 	if ok {
 		return set, len(set) > 0
 	}
-	commands, err := c.Commands(ctx)
+	commands, _, err := b.commands(ctx, app, c)
 	if err != nil {
 		return nil, false
 	}

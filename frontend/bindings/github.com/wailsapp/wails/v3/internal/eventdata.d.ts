@@ -13,6 +13,9 @@ import type * as host$0 from "../../../../../craft-agent/internal/host/models.js
 import type * as journal$0 from "../../../../../craft-agent/internal/journal/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import type * as menu$0 from "../../../../../craft-agent/internal/menu/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import type * as services$0 from "../../../../../craft-agent/services/models.js";
 
 declare module "@wailsio/runtime" {
@@ -20,6 +23,7 @@ declare module "@wailsio/runtime" {
         interface CustomEvents {
             "craft:activity": host$0.Event;
             "craft:journal": journal$0.Entry[] | null;
+            "craft:menus": menu$0.Summary[] | null;
             "craft:status": host$0.Status[] | null;
             "craft:update": services$0.UpdateProgress;
         }

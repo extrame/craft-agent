@@ -21,9 +21,11 @@ import (
 	"sync"
 	"time"
 
+	"craft-agent/internal/control"
 	"craft-agent/internal/craft"
 	"craft-agent/internal/host"
 	"craft-agent/internal/journal"
+	"craft-agent/internal/menu"
 	"craft-agent/internal/release"
 	"craft-agent/internal/tray"
 	"craft-agent/internal/update"
@@ -59,6 +61,8 @@ type AppService struct {
 	rel *release.Checker
 	// upd 下载并安装更新。只在用户点「更新」时用。
 	upd *update.Client
+	// menus 是预加载的菜单：内存一份、磁盘一份，切应用时不用等应用回话。
+	menus *menu.Store
 
 	installMu  sync.Mutex
 	installing map[string]bool
@@ -73,15 +77,19 @@ type AppService struct {
 // NewAppService 构造绑定层。
 func NewAppService(h *host.Host, j *journal.Journal) *AppService {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &AppService{
+	svc := &AppService{
 		host:       h,
 		journal:    j,
 		rel:        release.NewChecker(h.DataDir(), Version),
 		upd:        update.NewClient("Craft-Agent/" + Version),
+		menus:      menu.NewStore(h.DataDir()),
 		installing: map[string]bool{},
 		ctx:        ctx,
 		cancel:     cancel,
 	}
+	// 上次预加载的结果先装回来：界面第一帧就有菜单，不用等应用响应。
+	_ = svc.menus.Load()
+	return svc
 } // ServiceStartup 由 Wails 在应用启动时调用。
 func (s *AppService) ServiceStartup(ctx context.Context) {
 	s.ctx, s.cancel = context.WithCancel(ctx)
@@ -142,11 +150,125 @@ func (s *AppService) Inspect(id string) (DocumentView, error) {
 	return summarizeDocument(raw), nil
 }
 
+/* ---------------- 菜单（预加载） ---------------- */
+
+// Menus 返回每个应用已预加载的菜单摘要。界面用它显示「菜单多少条、什么时候抓的」。
+func (s *AppService) Menus() []menu.Summary {
+	return s.menus.Summaries(func(a craft.App) string { return s.rel.Installed(a).Version })
+}
+
+// Menu 返回预加载好的统一菜单模型。
+//
+// 只读缓存，不碰应用：界面在选中应用的一瞬间就会调它，要是这里顺手 Ensure，
+// 点一下左边列表就等于替用户打开了那个应用。
+func (s *AppService) Menu(id string) (menu.Menu, error) {
+	if m, ok := s.menus.Get(id); ok {
+		return m, nil
+	}
+	return menu.Menu{App: id}, nil
+}
+
+// RefreshMenu 重新抓一次命令表。应用没开着就启动它 —— 这是用户明确点了刷新。
+func (s *AppService) RefreshMenu(id string) (menu.Menu, error) {
+	app, ok := craft.ByID(id)
+	if !ok {
+		return menu.Menu{}, fmt.Errorf("未知应用: %s", id)
+	}
+	ctx, cancel := context.WithTimeout(s.ctx, 40*time.Second)
+	defer cancel()
+	client, err := s.host.Ensure(ctx, id)
+	if err != nil {
+		return menu.Menu{}, err
+	}
+	return s.loadMenu(ctx, client, app)
+}
+
+// PreloadMenus 把「已经在运行」的应用的菜单抓紧缓存。
+//
+// 刻意不启动应用：预加载是后台行为，用户打开 Craft Agent 不该换来六个窗口。
+// 没开的那些等他自己启动（启动后会自动补），或者点界面上的「刷新菜单」。
+func (s *AppService) PreloadMenus() []menu.Summary {
+	ctx, cancel := context.WithTimeout(s.ctx, 90*time.Second)
+	defer cancel()
+	for _, app := range craft.Suite {
+		if !app.Installed() || !s.menuNeedsRefresh(app) {
+			continue
+		}
+		client := s.host.Client(app.ID)
+		if client == nil {
+			// Connect 只接管已监听的控制通道；应用没开时这里会很快失败。
+			if err := s.host.Connect(ctx, app.ID); err != nil {
+				continue
+			}
+			client = s.host.Client(app.ID)
+		}
+		if client == nil {
+			continue
+		}
+		_, _ = s.loadMenu(ctx, client, app)
+	}
+	return s.Menus()
+}
+
+// loadMenu 抓一次命令表，重建成统一菜单并落盘，同时留一条流水。
+func (s *AppService) loadMenu(ctx context.Context, client *control.Client, app craft.App) (menu.Menu, error) {
+	start := time.Now()
+	m, err := s.menus.Refresh(ctx, client, app, s.installedVersion(app))
+	entry := journal.Entry{
+		At: time.Now(), Source: "gui", Session: "gui", Kind: "menu",
+		AppID: app.ID, Command: "engine.commands", OK: err == nil,
+		Duration: time.Since(start).Milliseconds(),
+	}
+	if err != nil {
+		entry.Detail = err.Error()
+	} else {
+		entry.Detail = fmt.Sprintf("%d 条命令 · %d 个菜单 · %d 条按前缀归组", m.Commands, len(m.Sections), m.Grouped)
+	}
+	s.journal.Append(entry)
+	return m, err
+}
+
+// refreshMenuQuiet 在连接/启动之后补一次预加载。失败不打断动作本身：
+// 菜单是辅助信息，连上了但菜单没抓到，界面照样能用。
+func (s *AppService) refreshMenuQuiet(id string) {
+	app, ok := craft.ByID(id)
+	if !ok || !s.menuNeedsRefresh(app) {
+		return
+	}
+	client := s.host.Client(id)
+	if client == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
+	defer cancel()
+	_, _ = s.loadMenu(ctx, client, app)
+}
+
+func (s *AppService) installedVersion(app craft.App) string {
+	return s.rel.Installed(app).Version
+}
+
+// menuNeedsRefresh：没缓存要抓；缓存的应用版本和本机不一致也要抓。
+func (s *AppService) menuNeedsRefresh(app craft.App) bool {
+	if _, ok := s.menus.Get(app.ID); !ok {
+		return true
+	}
+	for _, sum := range s.Menus() {
+		if sum.App == app.ID {
+			return sum.Stale
+		}
+	}
+	return true
+}
+
 /* ---------------- 动作 ---------------- */
 
 // Connect 接管一个已经在运行的实例，不启动新进程。
 func (s *AppService) Connect(id string) (host.Status, error) {
 	err := s.host.Connect(s.ctx, id)
+	if err == nil {
+		go s.refreshMenuQuiet(id)
+	}
 	return s.statusOf(id), err
 }
 
@@ -155,12 +277,18 @@ func (s *AppService) Launch(id string) (host.Status, error) {
 	err := s.host.Launch(s.ctx, id)
 	// 用户可能刚装完/刚升级过这个应用，启动后重新读一次版本。
 	s.rel.ForgetInstalled(id)
+	if err == nil {
+		go s.refreshMenuQuiet(id)
+	}
 	return s.statusOf(id), err
 }
 
 // Ensure 连接，必要时启动。
 func (s *AppService) Ensure(id string) (host.Status, error) {
 	_, err := s.host.Ensure(s.ctx, id)
+	if err == nil {
+		go s.refreshMenuQuiet(id)
+	}
 	return s.statusOf(id), err
 }
 
@@ -359,8 +487,9 @@ func (s *AppService) Install(id string) (InstallResult, error) {
 		return fail(err)
 	}
 
-	// 刚换了磁盘上的包，版本缓存必须作废，否则界面还会显示旧版本。
+	// 刚换了磁盘上的包，版本与菜单缓存都必须作废，否则界面还会显示旧内容。
 	s.rel.ForgetInstalled(id)
+	s.menus.Forget(id)
 	res.Version = out.Version
 	res.Path = out.Path
 	res.Backup = out.Backup
@@ -375,6 +504,7 @@ func (s *AppService) Install(id string) (InstallResult, error) {
 		// 更新前它是开着的，装完就还给它 —— 没人希望点一次更新，应用反而被关掉。
 		if err := s.host.Launch(s.ctx, id); err == nil {
 			res.Relaunched = true
+			go s.refreshMenuQuiet(id)
 		}
 	}
 

@@ -66,10 +66,13 @@ Craft 套件是桌面图形工具，每个应用都能在启动时打开一个�
 
 1. **JSON Lines，一行一请求一回复。** 网上流传的 `action={"key":"value"}` 格式是错的，
    服务端会回 `not a control request (missing string 'method')`。
-2. **通道形态按应用不同。** DeckCraft 0.11.1 要 TCP 端口，PdfCraft 要 Unix socket 路径。
-   Transport 是**每个应用自己的属性**，不是全局常量。
-3. **命令表可以动态拉取。** `engine.commands` 在 DeckCraft 0.11.1 上返回 377 条，
-   每条带标签、菜单路径和参数说明。MCP 工具据此生成，**不为某个应用硬编码命令名**。
+2. **这套协议已经演化出三代，不是一套协议加几个开关。** DeckCraft 0.11.1 与 FigCraft
+   0.11.2 收端口、说 `engine.*`；CADCraft 0.13.0 也收端口，但每条请求都要带 `token`；
+   PdfCraft 0.14.0 收的是**文件路径**，把 `{pid,port,token}` 写进去，说 JSON-RPC 的
+   `ui.*` 且要先 `auth`。传输、信封、方法名、连 `ui.command` 的参数形状，都按代不一样。
+3. **命令表可以动态拉取。** DeckCraft 0.11.1 返回 377 条、FigCraft 0.11.2 597 条、
+   CADCraft 0.13.0 498 条、PdfCraft 0.14.0 206 条，每条带标签、菜单路径和参数说明。
+   MCP 工具据此生成，**不为某个应用硬编码命令名**。
 4. **文档层存在但没有被发布。** `file.new` 会返回文档序号，但协议里没有文档 id、
    没有文档列表、没有任何命令接受文档参数 —— 想切换只有 `window.next {index}`，
    它就是改了名字的 `document.activate`。
@@ -85,9 +88,10 @@ Craft 套件是桌面图形工具，每个应用都能在启动时打开一个�
 ┌──────────────────────────────┐        ┌──────────────────────────────┐
 │ craft-agent mcp              │        │ craft-agent（GUI）            │
 │  · 工具层 craft_*            │        │  · 应用列表 / 状态 / 流水      │
-│  · 命令表动态发现            │        │  · 启动 · 连接 · 断开          │
+│  · 命令表动态发现            │        │  · 菜单树预加载与展示          │
+│                              │        │  · 启动 · 连接 · 断开          │
 └─────────────┬────────────────┘        └──────────────┬───────────────┘
-              │  控制通道（JSON Lines / TCP · Unix socket）
+              │  控制通道（JSON Lines / JSON-RPC，127.0.0.1 TCP）
               └───────────────────┬────────────────────┘
                                   ▼
                     ┌──────────────────────────────┐
@@ -112,11 +116,12 @@ Craft 套件是桌面图形工具，每个应用都能在启动时打开一个�
 ```
 main.go                    多模式入口：GUI / mcp / apps / versions / update / run
 internal/
-  craft/catalog.go         套件清单：安装路径、启动参数、通道形态
-  control/client.go        控制通道客户端（TCP / Unix，请求-响应配对、重连）
+  craft/catalog.go         套件清单：安装路径、启动参数、通道形态、令牌位置
+  control/client.go        控制通道客户端（三代方言、鉴权、方法名自动探测）
   control/api.go           语义化方法：Commands / Execute / Document / Screenshot
   host/host.go             进程宿主：发现、启动、端点分配、注册表
   journal/journal.go       跨进程操作流水（JSONL，满了自动轮转）
+  menu/menu.go             全套件统一的菜单模型；按版本落盘缓存
   mcp/server.go            MCP 服务器：元工具 + 命令表发现
   mcp/compose.go           deckcraft_text / deckcraft_style / deckcraft_page / craft_batch
   mcp/doc.go               craft_doc：文档锚点与写入前守卫
@@ -192,6 +197,9 @@ craft-agent install deckcraft      # 安装，或已装则升级（--dry-run 只
 craft-agent update deckcraft       # 只做升级；没装的应用会被拒绝并提示用 install
 craft-agent run deckcraft slide.inspect
 craft-agent run deckcraft file.new '{"blank":true}'
+craft-agent menu                   # 已预加载的菜单树，打摘要表
+craft-agent menu deckcraft         # 单个应用，打成树（--query 搜索，--json 导出）
+craft-agent menu deckcraft --refresh
 craft-agent mcp                    # MCP stdio 模式
 craft-agent mcp --apps deckcraft,wordcraft --tools minimal
 ```
@@ -200,10 +208,11 @@ craft-agent mcp --apps deckcraft,wordcraft --tools minimal
 Linux `~/.local/share/craft-agent/`：
 
 ```
-registry.json     在跑的应用的端点与 PID
+registry.json     在跑的应用的端点、PID 与控制令牌（0600）
 sessions.jsonl    操作流水
+menus/            每个应用一份预加载菜单树，按应用版本缓存
 shots/            craft_screenshot 截下来的窗口图
-run/              用 Unix socket 的应用的套接字
+run/              会合文件：应用自己挑端口时，{pid,port,token} 写在这里
 releases.json     最新版本缓存
 cache/updates/    下载的安装包与解出来的新副本
 ```
@@ -229,7 +238,7 @@ cache/updates/    下载的安装包与解出来的新副本
 }
 ```
 
-暴露 12 个工具。控制通道的上下文有三层，每一层都需要不同的处理方式：
+暴露 13 个工具。控制通道的上下文有三层，每一层都需要不同的处理方式：
 
 ```
 document（隐式，无参数，只能靠 window.next 切）
@@ -264,6 +273,7 @@ document（隐式，无参数，只能靠 window.next 切）
 | `craft_inspect` | 读当前文档结构与身份（页、对象 id、选区） |
 | `craft_run` | 执行一条命令（参数按该命令自己的文档）；写入前过文档守卫 |
 | `craft_commands` | 搜索该应用的命令表（id / 标签 / 参数说明） |
+| `craft_menu` | 该应用的菜单树：`path` 逐层展开，`query` 全树搜索；应用没给菜单位置的命令按 id 前缀归组并明确标出 |
 | `craft_screenshot` | 截一张窗口图落盘，返回路径 |
 | `craft_close` | 断开（并结束本会话启动的进程） |
 
@@ -383,16 +393,25 @@ WordCraft、GridCraft 可能根本没有 `text.selectAll`；PdfCraft 的「页�
 
 ## 已知边界
 
-- **只有 DeckCraft 和 PdfCraft 的通道形态经过实测**。其余 11 个应用在 `catalog.go` 里
-  标了 `--control` 但没有 `Transport`，宿主会尝试按 socket 探测，探测失败就如实报「未确认」，
-  不会假装支持。
-- CADCraft 本机 0.11 版本没有找到控制参数，`--help` 直接开窗口。
+- **四个应用的通道形态经过实测**：DeckCraft 0.11.1、FigCraft 0.11.2、CADCraft 0.13.0、
+  PdfCraft 0.14.0。WordCraft / SoundCraft / GridCraft 沿用了 FigCraft 那代的端口约定，
+  但本机没有装 —— 那是**推断不是实测**，两边都可能错（要的是会合文件，或者还要令牌）。
+  其余 6 个只标了 `--control`，宿主如实报「未确认」，不会假装支持。
+- **协议会整代改名。** CADCraft 0.13 每条请求要带令牌；PdfCraft 0.14 收会合文件、要先
+  `auth`，同一批操作改叫 `ui.*` 且参数形状都变了。客户端能在运行期自动探测的都探测了，
+  但如果哪一代把方法名和鉴权方式一起换掉，还是要加一条候选，不会凭空就通。
 - 内置 agent 对话**故意没有做**：这个项目的定位是「给第三方 AI 提供能力 + 给人看清状态」。
-- MCP 工具目前是 12 个（1 文档 + 4 封装 + 7 元工具）；`--tools core|full` 的命令级工具生成仍预留，
+- MCP 工具目前是 13 个（1 文档 + 4 封装 + 8 元工具）；`--tools core|full` 的命令级工具生成仍预留，
   一个应用几百条命令，全开会把模型上下文塞满。
 - `deckcraft_*` 假定的是 DeckCraft 的模型（`insert.textBox` / `text.selectAll` /
   `format.fontDialog`）。用之前会核对该应用的命令表，缺哪条就明确拒绝并让你退回
   `craft_run`；换到别的应用上直接拒绝。
+- **菜单树只是命令集的一部分。** 四个应用里 32%–64% 的命令没有任何菜单位置
+  （FigCraft、PdfCraft 最多）。这些命令按 id 前缀归组并标 `grouped`，**不会编一个像样的
+  菜单名** —— 只看真实菜单的读者会得出「PdfCraft 不能涂黑内容」的结论，
+  而 `redact.*` 明明存在，只是不在任何菜单里。
+- 菜单要从活进程里抓，所以**只为已在运行的应用预加载**；没在跑的显示「尚未加载」，
+  连上后自动补 —— 为了读个菜单去替用户开窗口，这个交换状态面板不做。
 - 封装层不做「写前快照」：`craft_batch` 中途失败会停，但已执行的那些步仍然生效，
   需要回退得靠用户的撤销，或后续加 `document.inspect` 快照 + 重建。
 - **文档身份只能靠 `title + path` 认**，因为通道不发布文档 id。后果是两个：

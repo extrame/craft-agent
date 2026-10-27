@@ -27,6 +27,8 @@ import (
 	"craft-agent/internal/craft"
 	"craft-agent/internal/host"
 	"craft-agent/internal/journal"
+	"craft-agent/internal/menu"
+	"craft-agent/internal/release"
 )
 
 // 包内别名：把控制通道的类型带进来，调用处不必到处写 control.Xxx。
@@ -59,6 +61,13 @@ type Options struct {
 	// 界面才知道「刚才谁改了什么」。
 	Journal *journal.Journal
 	Session string
+
+	// rel 读本机安装版本：菜单缓存的键里带版本，版本变了才重抓。
+	rel *release.Checker
+
+	// Menus 是预加载的菜单。为空时服务器自己建一个（读同一个数据目录），
+	// 这样 craft_menu 与 craft_commands 拿到的和界面看到的是同一份模型。
+	Menus *menu.Store
 }
 
 // Serve 启动 stdio MCP 服务器，直到 ctx 结束或客户端断开。
@@ -85,6 +94,12 @@ func Serve(ctx context.Context, opts Options) error {
 		server.WithToolCapabilities(true),
 		server.WithInstructions(instructions(opts.Apps)),
 	)
+
+	if opts.Menus == nil {
+		opts.Menus = menu.NewStore(opts.Host.DataDir())
+		_ = opts.Menus.Load()
+	}
+	opts.rel = release.NewChecker(opts.Host.DataDir(), opts.Version)
 
 	b := &bridge{opts: opts, caps: map[string]map[string]bool{}}
 	b.registerMetaTools(s)
@@ -142,7 +157,10 @@ B. Raw channel — for anything the composites do not cover:
    2. craft_open — connect; launches the app when nothing is running.
    3. craft_inspect — read the document before editing, so ids and layouts are real.
    4. craft_commands — search the app's own command table for a command id and its parameter doc.
-   5. craft_run — execute one command.
+   5. craft_menu — the same table as one normalised menu tree: sections with counts (no path),
+                   one section expanded (path="Format/Text"), or a search across ids/labels/shortcuts.
+                   Every Craft app uses this same shape, whatever its own encoding is.
+   6. craft_run — execute one command.
 
 Rules that save you a lot of pain:
 - THREE layers of context are implicit: document, then page, then shape. Only shapes carry explicit ids.
@@ -199,6 +217,14 @@ func (b *bridge) registerMetaTools(s *server.MCPServer) {
 		mcp.WithNumber("limit", mcp.Description("Maximum results. Default 40.")),
 	), b.handleCommands)
 
+	s.AddTool(mcp.NewTool("craft_menu",
+		mcp.WithDescription("The app's own menu, normalised into one shape shared by every Craft app: sections (real menu paths, with how many commands sit under each) plus groups by command-id prefix. Call it with no path/query to see the shape, with path (e.g. \"Format/Text\") to expand one node, or with query to search ids, labels, shortcuts and aliases."),
+		mcp.WithString("app", mcp.Required(), mcp.Description("App id.")),
+		mcp.WithString("path", mcp.Description("Menu path to expand, case-insensitive, e.g. \"Format/Text\". Omit for the section tree.")),
+		mcp.WithString("query", mcp.Description("Substring to match against command id, label, shortcut, menu path or alias.")),
+		mcp.WithNumber("limit", mcp.Description("Maximum matches for a query. Default 40.")),
+	), b.handleMenu)
+
 	s.AddTool(mcp.NewTool("craft_screenshot",
 		mcp.WithDescription("Render a PNG of the app window to disk and return its path. Use it to check what the user sees after a change."),
 		mcp.WithString("app", mcp.Required(), mcp.Description("App id.")),
@@ -253,16 +279,17 @@ func (b *bridge) handleOpen(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	if client == nil {
 		return errResult(fmt.Errorf("%s 已连接但通道不可用", app.Name)), nil
 	}
-	commands, cmdErr := client.Commands(ctx)
 	out := map[string]any{
 		"app":      app.ID,
 		"name":     app.Name,
 		"endpoint": client.Endpoint().String(),
 		"control":  app.DescribeControl(),
 	}
-	if cmdErr == nil {
-		out["commandCount"] = len(commands)
-		out["groups"] = groupSummary(commands)
+	if _, m, cmdErr := b.commands(ctx, app, client); cmdErr == nil {
+		out["commandCount"] = m.Commands
+		out["sections"] = len(m.Sections)
+		out["groups"] = m.Groups
+		out["draft"] = map[string]int{"mapped": m.Mapped, "groupedByPrefix": m.Grouped}
 	} else {
 		out["commandError"] = cmdErr.Error()
 	}
@@ -360,11 +387,15 @@ func readOnlyCommand(id string) bool {
 }
 
 func (b *bridge) handleCommands(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	client, err := b.clientFor(ctx, req)
+	app, err := b.resolveApp(req)
 	if err != nil {
 		return errResult(err), nil
 	}
-	commands, err := client.Commands(ctx)
+	client, err := b.opts.Host.Ensure(ctx, app.ID)
+	if err != nil {
+		return errResult(err), nil
+	}
+	commands, m, err := b.commands(ctx, app, client)
 	if err != nil {
 		return errResult(err), nil
 	}
@@ -389,7 +420,8 @@ func (b *bridge) handleCommands(ctx context.Context, req mcp.CallToolRequest) (*
 		"total":   len(commands),
 		"query":   query,
 		"results": matches,
-		"groups":  groupSummary(commands),
+		"groups":  m.Groups,
+		"sections": sectionCounts(m),
 	})
 }
 
@@ -521,7 +553,7 @@ func hintFor(msg string) string {
 		return "提示：还没有打开的文档。DeckCraft 上用 deckcraft_page action=add 建页；其他应用用 craft_run 执行 file.new。"
 	case strings.Contains(msg, "not available right now: no slides"):
 		return "提示：文档里还没有页。DeckCraft 上用 deckcraft_page action=add。"
-	case strings.HasPrefix(msg, "engine.execute 被拒绝: no shape"):
+	case strings.Contains(msg, "被拒绝: no shape"):
 		return "提示：这个形状不在当前页。id 只在它所在的页有效，用 craft_inspect 先看清页号，DeckCraft 上再用 deckcraft_page 切页。"
 	}
 	return ""
@@ -560,18 +592,105 @@ func matchesQuery(c controlCommand, q string) bool {
 	return false
 }
 
-// groupSummary 统计每个前缀有多少条命令，给模型一个「这个应用能干什么」的粗视图。
-func groupSummary(commands []controlCommand) map[string]int {
-	groups := map[string]int{}
-	for _, c := range commands {
-		groups[groupOf(c.ID)]++
+// commands 取命令表，优先吃预加载的缓存。
+//
+// 5 分钟够用：命令表随应用版本变，运行期间基本不动；而 craft_open / craft_commands /
+// craft_menu / 复合工具的核对会连着问好几次，每次重新拉一遍纯属浪费 ——
+// 每次都要应用回一张几百条的 JSON。
+func (b *bridge) commands(ctx context.Context, app craft.App, client *controlClient) ([]controlCommand, menu.Menu, error) {
+	version := ""
+	if b.opts.rel != nil {
+		version = b.opts.rel.Installed(app).Version
 	}
-	return groups
+	return b.opts.Menus.Commands(ctx, client, app, version, 5*time.Minute)
 }
 
-func groupOf(id string) string {
-	if i := strings.IndexByte(id, '.'); i > 0 {
-		return id[:i]
+// handleMenu 把同一份菜单模型按三种粒度给模型看。
+//
+// 默认只给形状（节点 + 条数）：一个应用几百条命令，整棵树塞进上下文没有意义。
+// 要具体命令就指定 path 展开，或者用 query 搜。
+func (b *bridge) handleMenu(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	app, err := b.resolveApp(req)
+	if err != nil {
+		return errResult(err), nil
 	}
-	return id
+	client, err := b.opts.Host.Ensure(ctx, app.ID)
+	if err != nil {
+		return errResult(err), nil
+	}
+	_, m, err := b.commands(ctx, app, client)
+	if err != nil {
+		return errResult(err), nil
+	}
+
+	out := map[string]any{
+		"app":             app.ID,
+		"name":            m.AppName,
+		"version":         m.Version,
+		"commands":        m.Commands,
+		"mapped":          m.Mapped,
+		"groupedByPrefix": m.Grouped,
+		"fetchedAt":       m.FetchedAt,
+		"groups":          m.Groups,
+	}
+
+	if q := strings.TrimSpace(req.GetString("query", "")); q != "" {
+		limit := req.GetInt("limit", 40)
+		if limit <= 0 {
+			limit = 40
+		}
+		hits := m.Search(q, limit)
+		out["query"] = q
+		out["matched"] = len(hits)
+		out["results"] = hits
+		return mcp.NewToolResultJSON(out)
+	}
+
+	if p := strings.TrimSpace(req.GetString("path", "")); p != "" {
+		node, ok := m.Find(strings.Split(p, "/")...)
+		if !ok {
+			out["error"] = fmt.Sprintf("没有 %q 这个菜单节点；顶层见 sections", p)
+			out["sections"] = nodeShapes(m.Sections)
+			return mcp.NewToolResultJSON(out)
+		}
+		out["path"] = node.Path
+		out["count"] = node.Count
+		out["onlyHere"] = len(node.Items)
+		out["items"] = node.Items
+		out["children"] = nodeShapes(node.Children)
+		return mcp.NewToolResultJSON(out)
+	}
+
+	out["sections"] = nodeShapes(m.Sections)
+	return mcp.NewToolResultJSON(out)
 }
+
+// nodeShape 是「只看形状」时的节点：不带 items，只有名字、条数和子节点。
+type nodeShape struct {
+	Name     string      `json:"name"`
+	Path     []string    `json:"path"`
+	Count    int         `json:"count"`
+	Direct   int         `json:"direct"`
+	Grouped  bool        `json:"groupedByPrefix,omitempty"`
+	Children []nodeShape `json:"children,omitempty"`
+}
+
+func nodeShapes(nodes []*menu.Node) []nodeShape {
+	if len(nodes) == 0 {
+		return nil
+	}
+	out := make([]nodeShape, 0, len(nodes))
+	for _, n := range nodes {
+		out = append(out, nodeShape{
+			Name:     n.Name,
+			Path:     n.Path,
+			Count:    n.Count,
+			Direct:   len(n.Items),
+			Grouped:  n.Grouped,
+			Children: nodeShapes(n.Children),
+		})
+	}
+	return out
+}
+
+func sectionCounts(m menu.Menu) []nodeShape { return nodeShapes(m.Sections) }

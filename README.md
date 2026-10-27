@@ -34,8 +34,9 @@ project builds on.
 One binary, two ways to run it:
 
 - **`craft-agent`** opens a window: which apps are installed, which are running, on what
-  endpoint, what document each one has open, and a live log of every command that went
-  through — with AI-issued commands distinguishable from your own clicks.
+  endpoint, what document each one has open, every app's **menu tree**, and a live log of
+  every command that went through — with AI-issued commands distinguishable from your own
+  clicks.
 - **`craft-agent mcp`** is an MCP server on stdio, for Cursor, Claude Desktop, or anything
   else that speaks MCP. It talks to the same app processes the window does.
 
@@ -70,11 +71,14 @@ Four facts shape the whole design:
 
 1. **JSON Lines, one request per line.** The `action={"key":"value"}` shape you'll find
    online is wrong; the server answers `not a control request (missing string 'method')`.
-2. **The transport differs per app.** DeckCraft 0.11.1 takes a TCP port, PdfCraft takes a
-   Unix socket path. Transport is a per-app attribute, not a global constant.
-3. **The command table is discoverable.** `engine.commands` returns 377 entries on
-   DeckCraft 0.11.1, each with label, menu path and prose parameter docs. MCP tools are
-   generated from it, so no command name is hard-coded.
+2. **There are three generations of it, not one protocol with flags.** DeckCraft 0.11.1 and
+   FigCraft 0.11.2 take a port and speak `engine.*`; CADCraft 0.13.0 takes a port but wants a
+   `token` on every request; PdfCraft 0.14.0 takes a **file path**, writes `{pid,port,token}`
+   into it, and speaks JSON-RPC `ui.*` with `auth` first. Transport, envelope, method names
+   and even `ui.command`'s parameter shape all differ per generation.
+3. **The command table is discoverable.** 377 entries on DeckCraft 0.11.1, 597 on FigCraft
+   0.11.2, 498 on CADCraft 0.13.0, 206 on PdfCraft 0.14.0 — each with label, menu path and
+   prose parameter docs. MCP tools are generated from it, so no command name is hard-coded.
 4. **Documents exist but are not published.** `file.new` returns a document number, yet
    there is no document id, no list, and no command that takes one — the only way to switch
    is `window.next {index}`, which is the missing `document.activate` under another name.
@@ -90,9 +94,10 @@ Four facts shape the whole design:
 ┌──────────────────────────────┐        ┌──────────────────────────────┐
 │ craft-agent mcp              │        │ craft-agent (GUI)            │
 │  · craft_* tool layer        │        │  · apps / status / log        │
-│  · command-table discovery   │        │  · launch · connect · detach  │
+│  · command-table discovery   │        │  · menu preload and display   │
+│                              │        │  · launch · connect · detach  │
 └─────────────┬────────────────┘        └──────────────┬───────────────┘
-              │  control channel (JSON Lines over TCP / Unix socket)
+              │  control channel (JSON Lines / JSON-RPC over 127.0.0.1 TCP)
               └───────────────────┬────────────────────┘
                                   ▼
                     ┌──────────────────────────────┐
@@ -120,11 +125,12 @@ directory:
 ```
 main.go                     one entry point: GUI / mcp / apps / versions / update / run
 internal/
-  craft/catalog.go          the suite: install path, launch flags, transport
-  control/client.go         channel client (TCP / Unix, request-response, reconnect)
+  craft/catalog.go          the suite: install path, launch flags, control shape, token path
+  control/client.go         channel client: three generations, auth, method discovery
   control/api.go            semantic methods: Commands / Execute / Document / Screenshot
   host/host.go              process host: discover, launch, assign endpoints, registry
   journal/journal.go        cross-process activity log (JSONL, rotates)
+  menu/menu.go              every app's menus as one tree; version-keyed cache on disk
   mcp/server.go             MCP server: meta tools + command-table discovery
   mcp/compose.go            deckcraft_text / deckcraft_style / deckcraft_page / craft_batch
   mcp/doc.go                craft_doc: document anchor and pre-write guard
@@ -201,6 +207,9 @@ craft-agent install deckcraft      # install, or upgrade if already installed (-
 craft-agent update deckcraft       # upgrade only; refuses an app that is not installed
 craft-agent run deckcraft slide.inspect
 craft-agent run deckcraft file.new '{"blank":true}'
+craft-agent menu                   # every app's preloaded menu tree, as a table
+craft-agent menu deckcraft         # one app, as a tree (--query to search, --json to dump)
+craft-agent menu deckcraft --refresh
 craft-agent mcp                    # MCP over stdio
 craft-agent mcp --apps deckcraft,wordcraft --tools minimal
 ```
@@ -209,10 +218,11 @@ Data directory — macOS `~/Library/Application Support/CraftAgent/`,
 Windows `%APPDATA%\CraftAgent\`, Linux `~/.local/share/craft-agent/`:
 
 ```
-registry.json     endpoints and PIDs of running apps
+registry.json     endpoints, PIDs and control tokens of running apps
 sessions.jsonl    activity log
+menus/            one preloaded menu tree per app, keyed by app version
 shots/            screenshots taken through craft_screenshot
-run/              Unix sockets for apps that use them
+run/              rendezvous files for apps that pick their own port
 releases.json     cached release info
 cache/updates/    downloaded installers and staged bundles
 ```
@@ -241,7 +251,7 @@ The window's "MCP setup" button prints a snippet you can paste as-is:
 }
 ```
 
-Twelve tools. Three layers of context need three different treatments:
+Thirteen tools. Three layers of context need three different treatments:
 
 ```
 document   implicit, no parameters — can only be switched with window.next
@@ -277,6 +287,7 @@ rather than fail halfway through a model that does not exist there.
 | `craft_inspect` | read the active document: pages, shape ids, selection |
 | `craft_run` | execute one command (parameters documented per command); pre-write guard applies |
 | `craft_commands` | search that app's command table |
+| `craft_menu` | the app's menus as one tree: `path` to walk into, `query` to search; commands the app gives no menu for are grouped by id prefix and marked |
 | `craft_screenshot` | capture the window to a file, return the path |
 | `craft_close` | detach, and stop what this session started |
 
@@ -411,17 +422,29 @@ The order is fixed, and any failure stops where it happened:
 
 ## Known limits
 
-- **Only DeckCraft and PdfCraft have a measured transport.** The other eleven apps have a
-  `--control` flag in `catalog.go` but no confirmed transport; the host tries a socket and
-  reports "unconfirmed" rather than pretending.
-- CADCraft 0.11 exposes no control flag on this machine — `--help` just opens the window.
+- **Four apps have a measured transport**: DeckCraft 0.11.1, FigCraft 0.11.2, CADCraft
+  0.13.0 and PdfCraft 0.14.0. WordCraft, SoundCraft and GridCraft carry the port convention
+  because they ship alongside FigCraft, but neither was on this machine — that is inherited,
+  not measured. The remaining six have a `--control` flag in `catalog.go` and no confirmed
+  transport; the host reports "unconfirmed" rather than pretending.
+- **A protocol generation can rename anything.** CADCraft 0.13 wants a token on every
+  request; PdfCraft 0.14 takes a rendezvous file, wants `auth` first, and calls the same
+  operations `ui.*` with a different parameter shape. The client discovers what it can at
+  run time, but a generation that renames *both* the methods and the auth scheme would need
+  a new candidate entry rather than just working.
 - No built-in agent chat, by design: the point is to give third-party AI a capability and
   give a human a clear view.
-- Twelve MCP tools today. Per-command tool generation (`--tools core|full`) stays reserved:
+- Thirteen MCP tools today. Per-command tool generation (`--tools core|full`) stays reserved:
   a few hundred commands per app would fill a model's context.
 - The `deckcraft_*` tools assume DeckCraft's model (`insert.textBox`, `text.selectAll`,
   `format.fontDialog`). They check the command table first and refuse, pointing at
   `craft_run`, if one is missing — and they refuse on any other app outright.
+- **The menu tree is a partial view of the command set.** Between 32% and 64% of commands
+  report no menu path at all (largest on FigCraft and PdfCraft). Those are grouped by id
+  prefix and marked `grouped`, not given an invented menu — so a reader that only walks real
+  menus will conclude PdfCraft cannot redact, when `redact.*` exists and simply has no menu.
+- A menu is fetched from a live process, so it is preloaded only for apps that are already
+  running. Starting a window to read a menu is not a trade the status panel makes.
 - No pre-write snapshot: a `craft_batch` that fails midway keeps the steps already applied.
   Rolling back is your undo, or a future `document.inspect` snapshot plus rebuild.
 - **Document identity is `title + path`**, because the protocol has no document id. Two

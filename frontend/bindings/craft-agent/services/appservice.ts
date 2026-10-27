@@ -16,6 +16,9 @@ import * as host$0 from "../internal/host/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as journal$0 from "../internal/journal/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as menu$0 from "../internal/menu/models.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -110,6 +113,23 @@ export function MCPConfig(): $CancellablePromise<string> {
 }
 
 /**
+ * Menu 返回预加载好的统一菜单模型。
+ * 
+ * 只读缓存，不碰应用：界面在选中应用的一瞬间就会调它，要是这里顺手 Ensure，
+ * 点一下左边列表就等于替用户打开了那个应用。
+ */
+export function Menu(id: string): $CancellablePromise<menu$0.Menu> {
+    return $Call.ByID(2664148827, id);
+}
+
+/**
+ * Menus 返回每个应用已预加载的菜单摘要。界面用它显示「菜单多少条、什么时候抓的」。
+ */
+export function Menus(): $CancellablePromise<menu$0.Summary[] | null> {
+    return $Call.ByID(581221368);
+}
+
+/**
  * OpenDataDir 在系统文件管理器里打开数据目录。
  */
 export function OpenDataDir(): $CancellablePromise<void> {
@@ -121,6 +141,23 @@ export function OpenDataDir(): $CancellablePromise<void> {
  */
 export function OpenRelease(id: string): $CancellablePromise<void> {
     return $Call.ByID(1772555897, id);
+}
+
+/**
+ * PreloadMenus 把「已经在运行」的应用的菜单抓紧缓存。
+ * 
+ * 刻意不启动应用：预加载是后台行为，用户打开 Craft Agent 不该换来六个窗口。
+ * 没开的那些等他自己启动（启动后会自动补），或者点界面上的「刷新菜单」。
+ */
+export function PreloadMenus(): $CancellablePromise<menu$0.Summary[] | null> {
+    return $Call.ByID(810642079);
+}
+
+/**
+ * RefreshMenu 重新抓一次命令表。应用没开着就启动它 —— 这是用户明确点了刷新。
+ */
+export function RefreshMenu(id: string): $CancellablePromise<menu$0.Menu> {
+    return $Call.ByID(3645402656, id);
 }
 
 /**

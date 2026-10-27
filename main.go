@@ -32,6 +32,7 @@ import (
 	"craft-agent/internal/host"
 	"craft-agent/internal/journal"
 	mcpserver "craft-agent/internal/mcp"
+	"craft-agent/internal/menu"
 	"craft-agent/internal/release"
 	"craft-agent/internal/tray"
 	"craft-agent/internal/update"
@@ -102,6 +103,7 @@ const (
 	eventStatus   = "craft:status"
 	eventJournal  = "craft:journal"
 	eventUpdate   = "craft:update"
+	eventMenus    = "craft:menus"
 )
 
 func init() {
@@ -109,6 +111,7 @@ func init() {
 	application.RegisterEvent[[]host.Status](eventStatus)
 	application.RegisterEvent[[]journal.Entry](eventJournal)
 	application.RegisterEvent[services.UpdateProgress](eventUpdate)
+	application.RegisterEvent[[]menu.Summary](eventMenus)
 	services.Version = version
 }
 
@@ -151,6 +154,8 @@ func main() {
 			os.Exit(runMCP(os.Args[2:]))
 		case "apps":
 			os.Exit(runApps(os.Args[2:]))
+		case "menu", "menus":
+			os.Exit(runMenu(os.Args[2:]))
 		case "run":
 			os.Exit(runOnce(os.Args[2:]))
 		case "versions":
@@ -178,6 +183,7 @@ func usage() {
   craft-agent mcp [--apps deckcraft,wordcraft] [--tools minimal|core|full]
                                                  以 MCP stdio 服务器运行（给 Cursor / Claude）
   craft-agent apps                               列出套件应用与本机状态
+  craft-agent menu [app] [--refresh] [--json]    查看统一菜单模型（--refresh 重新抓，没开则启动）
   craft-agent versions [--refresh]               列出本机版本与远端最新版本
   craft-agent install <app> [--dry-run]          安装最新发布（含首次安装）
   craft-agent update <app> [--dry-run]            升级到最新发布（--dry-run 只查安装包）
@@ -260,6 +266,228 @@ func runVersions(args []string) int {
 		}
 	}
 	return 0
+}
+
+// runMenu 查看/刷新统一菜单模型。界面之外的一条自查路径：
+// agent 与界面用的是同一份模型，这里能直接看到它长什么样。
+func runMenu(args []string) int {
+	fs := flag.NewFlagSet("menu", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	refresh := fs.Bool("refresh", false, "重新抓取命令表（应用没开着就启动）")
+	asJSON := fs.Bool("json", false, "输出完整菜单模型 JSON")
+	path := fs.String("path", "", "只看某个菜单节点，例如 \"Format/Text\"")
+	query := fs.String("query", "", "按关键字搜索命令")
+	limit := fs.Int("limit", 40, "搜索时最多列出多少条")
+	dataDir := fs.String("data-dir", "", "数据目录")
+
+	var flags, positional []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if !strings.HasPrefix(a, "-") {
+			positional = append(positional, a)
+			continue
+		}
+		flags = append(flags, a)
+		if !strings.Contains(a, "=") && takesValue(a) && i+1 < len(args) {
+			flags = append(flags, args[i+1])
+			i++
+		}
+	}
+	if err := fs.Parse(flags); err != nil {
+		return 2
+	}
+
+	dir := *dataDir
+	if dir == "" {
+		d, err := host.DefaultDataDir()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "找不到数据目录: %v\n", err)
+			return 1
+		}
+		dir = d
+	}
+	h, _, err := newHost(dir, "cli", "cli", nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "初始化失败: %v\n", err)
+		return 1
+	}
+	defer h.Close()
+
+	store := menu.NewStore(h.DataDir())
+	_ = store.Load()
+	checker := release.NewChecker(h.DataDir(), version)
+
+	// 不给应用名：列全量摘要；--refresh 时顺便把「开着的」应用都刷一遍。
+	if len(positional) == 0 {
+		if *refresh {
+			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+			defer cancel()
+			for _, app := range craft.Suite {
+				if !app.Installed() {
+					continue
+				}
+				client, err := h.Ensure(ctx, app.ID)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "%s: %v\n", app.ID, err)
+					continue
+				}
+				if _, err := store.Refresh(ctx, client, app, checker.Installed(app).Version); err != nil {
+					fmt.Fprintf(os.Stderr, "%s: %v\n", app.ID, err)
+				}
+			}
+		}
+		return printMenuSummaries(store, checker)
+	}
+
+	id := strings.ToLower(strings.TrimSpace(positional[0]))
+	app, ok := craft.ByID(id)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "未知应用: %s\n", id)
+		return 2
+	}
+	if *refresh {
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		client, err := h.Ensure(ctx, id)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "抓取 %s 失败: %v\n", app.Name, err)
+			return 1
+		}
+		if _, err := store.Refresh(ctx, client, app, checker.Installed(app).Version); err != nil {
+			fmt.Fprintf(os.Stderr, "抓取 %s 失败: %v\n", app.Name, err)
+			return 1
+		}
+	}
+
+	m, ok := store.Get(id)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "%s 还没有预加载的菜单；加 --refresh 抓一次\n", app.Name)
+		return 1
+	}
+	if *asJSON {
+		raw, err := json.MarshalIndent(m, "", " ")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "编码失败: %v\n", err)
+			return 1
+		}
+		fmt.Println(string(raw))
+		return 0
+	}
+	printMenu(m, *path, *query, *limit)
+	return 0
+}
+
+func takesValue(flagArg string) bool {
+	for _, name := range []string{"--path", "-path", "--query", "-query", "--limit", "-limit", "--data-dir", "-data-dir"} {
+		if flagArg == name {
+			return true
+		}
+	}
+	return false
+}
+
+func printMenuSummaries(store *menu.Store, checker *release.Checker) int {
+	sums := store.Summaries(func(a craft.App) string { return checker.Installed(a).Version })
+	if len(sums) == 0 {
+		fmt.Println("还没有预加载的菜单。跑一次: craft-agent menu <app> --refresh")
+		return 0
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\t应用\t命令\t菜单\t归组\t版本\t抓取时间\t备注")
+	for _, s := range sums {
+		note := ""
+		if s.Stale {
+			note = "版本已变，建议 --refresh"
+		}
+		if s.Error != "" {
+			note = s.Error
+		}
+		ver := s.Version
+		if ver == "" {
+			ver = "—"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%s\t%s\t%s\n",
+			s.App, s.Name, s.Commands, s.Sections, s.Grouped, ver,
+			s.FetchedAt.Local().Format("01-02 15:04"), note)
+	}
+	_ = w.Flush()
+	fmt.Printf("\n菜单文件: %s\n", store.Dir())
+	return 0
+}
+
+// printMenu 是给人看的树。层级用缩进表示，条数写在节点后面 ——
+// 「这个应用有几条命令」和「它长在哪几个菜单下」是两个问题，这里都有。
+func printMenu(m menu.Menu, path string, query string, limit int) {
+	if query != "" {
+		hits := m.Search(query, limit)
+		for _, it := range hits {
+			fmt.Printf("%-28s %-24s %-10s %s\n", it.ID, clipLabel(it.Label), it.Shortcut, strings.Join(it.Path, " › "))
+		}
+		fmt.Printf("\n%d 条命中（共 %d 条命令）\n", len(hits), m.Commands)
+		return
+	}
+
+	header := fmt.Sprintf("%s %s · %d 条命令 · %d 个菜单 · %d 条按前缀归组 · 抓取于 %s",
+		m.AppName, versionLabel(m.Version), m.Commands, len(m.Sections), m.Grouped,
+		m.FetchedAt.Local().Format("2006-01-02 15:04:05"))
+	fmt.Println(header)
+
+	if path != "" {
+		node, ok := m.Find(strings.Split(path, "/")...)
+		if !ok {
+			fmt.Printf("\n找不到菜单节点 %q；顶层有: %s\n", path, sectionNames(m))
+			return
+		}
+		printNode(node, 0)
+		return
+	}
+	if len(m.Sections) == 0 {
+		fmt.Println("\n（这份菜单是空的）")
+		return
+	}
+	fmt.Println()
+	for _, n := range m.Sections {
+		printNode(n, 0)
+	}
+}
+
+func printNode(n *menu.Node, depth int) {
+	indent := strings.Repeat("  ", depth)
+	name := n.Name
+	if n.Grouped {
+		name += "（按命令前缀）"
+	}
+	fmt.Printf("%s%s  [%d]\n", indent, name, n.Count)
+	for _, it := range n.Items {
+		fmt.Printf("%s  %-28s %-24s %s\n", indent, it.ID, clipLabel(it.Label), it.Shortcut)
+	}
+	for _, c := range n.Children {
+		printNode(c, depth+1)
+	}
+}
+
+func sectionNames(m menu.Menu) string {
+	names := make([]string, 0, len(m.Sections))
+	for _, n := range m.Sections {
+		names = append(names, n.Name)
+	}
+	return strings.Join(names, " / ")
+}
+
+func versionLabel(v string) string {
+	if v == "" {
+		return "（版本未知）"
+	}
+	return "v" + v
+}
+
+// clipLabel 按字符截断，别把长标签挤掉后面的快捷键。
+func clipLabel(s string) string {
+	r := []rune(s)
+	if len(r) <= 22 {
+		return s
+	}
+	return string(r[:21]) + "…"
 }
 
 func executable() string {
@@ -560,6 +788,15 @@ func runGUI() {
 		}
 	}()
 
+	// 菜单也预加载一次：只接管已经开着的应用，不替用户打开窗口。
+	// 缓存已经在 NewAppService 里读回来了，所以界面第一帧就有内容；
+	// 这一步只是把「应用在跑但菜单是旧的」补上。
+	go func() {
+		if n := len(svc.PreloadMenus()); n > 0 {
+			log.Printf("菜单已预加载 %d 个应用", n)
+		}
+	}()
+
 	app := application.New(application.Options{
 		Name:        "Craft Agent",
 		Description: "Craft 套件的 AI 协同工作台",
@@ -608,6 +845,7 @@ func runGUI() {
 			suite := svc.Suite()
 			a.Event.Emit(eventStatus, suite)
 			a.Event.Emit(eventJournal, svc.Journal(120))
+			a.Event.Emit(eventMenus, svc.Menus())
 
 			// 窗口不可见时页面上的数字没人看，托盘 tooltip 是唯一还在报状态的地方。
 			online := 0
