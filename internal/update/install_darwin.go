@@ -93,6 +93,10 @@ func Install(ctx context.Context, c *Client, o Options) (Result, error) {
 
 	// 3. 拷到目标目录旁边的暂存位置：同一卷才能用 rename 原子换位，
 	//    中途失败也只是留下一个临时目录，碰不到正在用的那份。
+	//    首次安装时目标目录可能还不存在（家目录下的 Applications）。
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return Result{}, fmt.Errorf("创建安装目录 %s 失败：%w", destDir, err)
+	}
 	staging, err := os.MkdirTemp(destDir, ".craft-agent-stage-")
 	if err != nil {
 		return Result{}, fmt.Errorf("目标目录不可写（%s）：%w", destDir, err)
@@ -142,7 +146,11 @@ func Install(ctx context.Context, c *Client, o Options) (Result, error) {
 }
 
 // destination 决定装到哪：优先用户指定的目录，其次现有副本所在目录
-// （用户把应用放在 ~/Applications 或别处，就还在那儿），最后 /Applications。
+// （用户把应用放在 ~/Applications 或别处，就还在那儿），最后是首次安装。
+//
+// 首次安装落在 /Applications；写不进去（非管理员账号）就退回家目录的
+// Applications —— 它在 Launchpad 和 Finder 里同样可见，catalog 的探测路径
+// 也包含它，所以装完立刻就能被认出来。
 func destination(o Options, existingBundle string) (dir, bundle string) {
 	name := o.App.Name + ".app"
 	if g := o.App.Name; g == "" {
@@ -154,7 +162,35 @@ func destination(o Options, existingBundle string) (dir, bundle string) {
 	if existingBundle != "" {
 		return filepath.Dir(existingBundle), existingBundle
 	}
+	for _, dir := range []string{"/Applications", filepath.Join(homeDir(), "Applications")} {
+		if writable(dir) {
+			return dir, filepath.Join(dir, name)
+		}
+	}
+	// 两处都写不进去：照旧返回标准位置，让后面的 MkdirTemp 给出带路径的错误。
 	return "/Applications", filepath.Join("/Applications", name)
+}
+
+// writable 判断能不能在这个目录里落一个新条目。真正的判据是试一次，
+// 权限位、ACL、只读卷都能被这一步如实反映出来。
+func writable(dir string) bool {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return false
+	}
+	probe, err := os.MkdirTemp(dir, ".craft-agent-probe-")
+	if err != nil {
+		return false
+	}
+	_ = os.Remove(probe)
+	return true
+}
+
+func homeDir() string {
+	h, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return h
 }
 
 // findBundle 在挂载点里找应用包。优先同名，其次唯一的那个 .app。

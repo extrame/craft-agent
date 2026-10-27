@@ -51,8 +51,8 @@ const (
 )
 
 func (b *bridge) registerComposeTools(s *server.MCPServer) {
-	s.AddTool(mcp.NewTool("craft_page",
-		mcp.WithDescription("Page/slide operations with the current page guaranteed afterwards. action=add creates a page (and moves to it), goto switches, delete/duplicate/move adjust the deck. Returns the deck outline so you never have to guess where the caret is. Prefer this over raw slide.new: slide.new does not promise to leave you on the new page in every build."),
+	s.AddTool(mcp.NewTool("deckcraft_page",
+		mcp.WithDescription("DeckCraft only. Page/slide operations with the current page guaranteed afterwards. action=add creates a page (and moves to it), goto switches, delete/duplicate/move adjust the deck. Returns the deck outline so you never have to guess where the caret is. Prefer this over raw slide.new: slide.new does not promise to leave you on the new page in every build."),
 		mcp.WithString("app", mcp.Required(), mcp.Description("App id.")),
 		mcp.WithString("action", mcp.Required(), mcp.Description("add | goto | delete | duplicate | move")),
 		mcp.WithNumber("index", mcp.Description("Target page index for goto/delete/duplicate, or the source index for move. For add: omit to append at the end.")),
@@ -62,8 +62,8 @@ func (b *bridge) registerComposeTools(s *server.MCPServer) {
 		mcp.WithString("body", mcp.Description("Optional body text for add.")),
 	), b.handlePage)
 
-	s.AddTool(mcp.NewTool("craft_text",
-		mcp.WithDescription("Create or restyle a text box in ONE call. This wraps the six-command dance the raw channel needs (select → text.edit → selectAll → format → align → exit) and verifies the result with the app's own format.state plus a page check (verified.onSlide). Give 'id' to restyle an existing text shape, or omit it to insert a new one. Only pass the style keys you actually want changed. Refused when the active document is not the one this session anchored — see craft_doc."),
+	s.AddTool(mcp.NewTool("deckcraft_text",
+		mcp.WithDescription("DeckCraft only. Create or restyle a text box in ONE call. This wraps the six-command dance the raw channel needs (select → text.edit → selectAll → format → align → exit) and verifies the result with the app's own format.state plus a page check (verified.onSlide). Give 'id' to restyle an existing text shape, or omit it to insert a new one. Only pass the style keys you actually want changed. Refused when the active document is not the one this session anchored — see craft_doc."),
 		mcp.WithString("app", mcp.Required(), mcp.Description("App id.")),
 		mcp.WithNumber("id", mcp.Description("Existing text shape id. Omit to insert a new text box.")),
 		mcp.WithString("text", mcp.Description("Text content. Required when inserting; when updating, omit to keep the current text.")),
@@ -83,8 +83,8 @@ func (b *bridge) registerComposeTools(s *server.MCPServer) {
 		mcp.WithString("autofit", mcp.Description("none | shrink | resize. shrink keeps the box size and scales text down, resize grows the box.")),
 	), b.handleText)
 
-	s.AddTool(mcp.NewTool("craft_style",
-		mcp.WithDescription("Restyle existing text shapes by id — one call for many shapes. It finds each shape's page, switches there, builds a real text selection and applies the formatting, then reports the formatting the app actually applied (from format.state) plus any shape that failed. Use this instead of a chain of format.* commands, which need a text selection you cannot see."),
+	s.AddTool(mcp.NewTool("deckcraft_style",
+		mcp.WithDescription("DeckCraft only. Restyle existing text shapes by id — one call for many shapes. It finds each shape's page, switches there, builds a real text selection and applies the formatting, then reports the formatting the app actually applied (from format.state) plus any shape that failed. Use this instead of a chain of format.* commands, which need a text selection you cannot see."),
 		mcp.WithString("app", mcp.Required(), mcp.Description("App id.")),
 		mcp.WithAny("ids", mcp.Required(), mcp.Description("Shape ids to restyle, as an array of integers. Cross-page ids are allowed; each is handled on its own page.")),
 		mcp.WithString("font", mcp.Description("Font family.")),
@@ -115,6 +115,9 @@ func (b *bridge) registerComposeTools(s *server.MCPServer) {
 func (b *bridge) handlePage(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	app, c, err := b.openReq(ctx, req)
 	if err != nil {
+		return errResult(err), nil
+	}
+	if err := deckOnly(app, "deckcraft_page"); err != nil {
 		return errResult(err), nil
 	}
 	doc, err := b.guardDoc(ctx, c)
@@ -148,7 +151,7 @@ func (b *bridge) handlePage(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 		}
 		raw, err := b.exec(ctx, c, cmdSlideNew, params)
 		if err != nil {
-			b.record(app.ID, "command", "craft_page:add", false, err.Error(), time.Since(start))
+			b.record(app.ID, "command", "deckcraft_page:add", false, err.Error(), time.Since(start))
 			return errResult(err), nil
 		}
 		created := intField(raw, "index")
@@ -183,7 +186,7 @@ func (b *bridge) handlePage(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 		}
 		raw, err := b.exec(ctx, c, id, params)
 		if err != nil {
-			b.record(app.ID, "command", "craft_page:"+action, false, err.Error(), time.Since(start))
+			b.record(app.ID, "command", "deckcraft_page:"+action, false, err.Error(), time.Since(start))
 			return errResult(err), nil
 		}
 		applied = decodeObject(raw)
@@ -202,7 +205,7 @@ func (b *bridge) handlePage(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	if fresh, err := b.readDoc(ctx, c); err == nil {
 		doc = fresh
 	}
-	b.record(app.ID, "command", "craft_page:"+note, true, "", time.Since(start))
+	b.record(app.ID, "command", "deckcraft_page:"+note, true, "", time.Since(start))
 	return mcp.NewToolResultJSON(map[string]any{
 		"app":      app.ID,
 		"document": doc,
@@ -216,6 +219,9 @@ func (b *bridge) handlePage(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 func (b *bridge) handleText(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	app, c, err := b.openReq(ctx, req)
 	if err != nil {
+		return errResult(err), nil
+	}
+	if err := deckOnly(app, "deckcraft_text"); err != nil {
 		return errResult(err), nil
 	}
 	if err := b.requireCommands(ctx, app, c, cmdTextBox, cmdSelect, cmdTextEdit, cmdTextSelectAll, cmdFontDialog, cmdFormatState); err != nil {
@@ -243,7 +249,7 @@ func (b *bridge) handleText(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 		}
 		if text != "" {
 			if _, err := b.exec(ctx, c, cmdTextSet, map[string]any{"id": id, "text": text}); err != nil {
-				b.record(app.ID, "command", "craft_text", false, err.Error(), time.Since(start))
+				b.record(app.ID, "command", "deckcraft_text", false, err.Error(), time.Since(start))
 				return errResult(err), nil
 			}
 		}
@@ -270,7 +276,7 @@ func (b *bridge) handleText(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 		}
 		raw, err := b.exec(ctx, c, cmdTextBox, params)
 		if err != nil {
-			b.record(app.ID, "command", "craft_text", false, err.Error(), time.Since(start))
+			b.record(app.ID, "command", "deckcraft_text", false, err.Error(), time.Since(start))
 			return errResult(err), nil
 		}
 		id = intField(raw, "id")
@@ -281,7 +287,7 @@ func (b *bridge) handleText(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 
 	state, err := b.styleShape(ctx, c, id, styleFromArgs(req))
 	if err != nil {
-		b.record(app.ID, "command", "craft_text", false, err.Error(), time.Since(start))
+		b.record(app.ID, "command", "deckcraft_text", false, err.Error(), time.Since(start))
 		return errResult(fmt.Errorf("形状 %d 已建立，但排版失败: %w", id, err)), nil
 	}
 
@@ -313,13 +319,16 @@ func (b *bridge) handleText(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	if box, err := b.exec(ctx, c, cmdShapeInspect, map[string]any{"id": id}); err == nil {
 		out["box"] = decodeObject(box)["box"]
 	}
-	b.record(app.ID, "command", fmt.Sprintf("craft_text #%d", id), true, summarize(map[string]any{"slide": slide, "text": text}), time.Since(start))
+	b.record(app.ID, "command", fmt.Sprintf("deckcraft_text #%d", id), true, summarize(map[string]any{"slide": slide, "text": text}), time.Since(start))
 	return mcp.NewToolResultJSON(out)
 }
 
 func (b *bridge) handleStyle(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	app, c, err := b.openReq(ctx, req)
 	if err != nil {
+		return errResult(err), nil
+	}
+	if err := deckOnly(app, "deckcraft_style"); err != nil {
 		return errResult(err), nil
 	}
 	if err := b.requireCommands(ctx, app, c, cmdSelect, cmdTextEdit, cmdTextSelectAll, cmdFontDialog, cmdFormatState); err != nil {
@@ -357,7 +366,7 @@ func (b *bridge) handleStyle(ctx context.Context, req mcp.CallToolRequest) (*mcp
 		done = append(done, map[string]any{"id": id, "slide": slide, "applied": state})
 	}
 
-	b.record(app.ID, "command", fmt.Sprintf("craft_style n=%d", len(ids)), len(failed) == 0,
+	b.record(app.ID, "command", fmt.Sprintf("deckcraft_style n=%d", len(ids)), len(failed) == 0,
 		fmt.Sprintf("ok=%d failed=%d", len(done), len(failed)), time.Since(start))
 	return mcp.NewToolResultJSON(map[string]any{
 		"app":      app.ID,
@@ -875,4 +884,16 @@ func containsInt(list []int, want int) bool {
 		}
 	}
 	return false
+}
+
+// deckOnly 保证以 deckcraft_ 开头的工具只作用于 DeckCraft。
+//
+// 名字里带 deckcraft 就得说到做到：幻灯片、页、文本框这套模型是 DeckCraft 的，
+// 别的应用要么没有，要么没实测过。与其让它跑到一半、以一句 "unknown command"
+// 或静默的空选区收场，不如现在就告诉模型该往哪走 —— craft_run 永远能兜底。
+func deckOnly(app craft.App, tool string) error {
+	if app.ID == craft.DeckCraftID {
+		return nil
+	}
+	return fmt.Errorf("%s 只用于 DeckCraft（幻灯片模型），对 %s 不成立。请改用 craft_run 执行它自己的命令；不确定命令 id 时先 craft_commands 查表", tool, app.Name)
 }

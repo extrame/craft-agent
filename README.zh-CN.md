@@ -46,8 +46,9 @@ Craft 套件是桌面图形工具，每个应用都能在启动时打开一个�
 
 | | Launcher | Craft Agent |
 |---|---|---|
-| 首次安装 / 卸载 | ✅ | ❌ 不接管（先装好再用） |
+| 首次安装 | ✅ | ✅ 与升级同一条路：校验 → 验签 → 放到位 |
 | 升级 | ✅ | ✅ 下载 → 校验 → 验签 → 换包 → 留备份 |
+| 卸载 | ✅ | ❌ 自己拖进废纸篓 |
 | 应用运行状态 | 列表 | 列表 + 控制通道 + 端点 + 进程 + 文档 |
 | agent 接入 | ❌ | ✅ 一个 MCP server 覆盖全部应用 |
 | 操作留痕 | ❌ | ✅ 跨进程流水，区分「AI 做的」和「本机做的」 |
@@ -117,7 +118,7 @@ internal/
   host/host.go             进程宿主：发现、启动、端点分配、注册表
   journal/journal.go       跨进程操作流水（JSONL，满了自动轮转）
   mcp/server.go            MCP 服务器：元工具 + 命令表发现
-  mcp/compose.go           craft_text / craft_style / craft_page / craft_batch
+  mcp/compose.go           deckcraft_text / deckcraft_style / deckcraft_page / craft_batch
   mcp/doc.go               craft_doc：文档锚点与写入前守卫
   release/feed.go          查最新版本：官方聚合 feed 优先，GitHub 回落，6 小时缓存
   release/installed.go     读本机版本：Info.plist / 文件版本 / --version
@@ -130,11 +131,21 @@ docs/control-protocol.md   控制通道的实测记录
 
 ## 安装
 
-还没有预编译包：版本还是 0.1.0，接口每天都在动。请从源码构建（下一节），把二进制放到
-`PATH` 里的任意位置即可。
+Craft Agent 自己还没有预编译包：版本 0.1.0，接口每天都在动。请从源码构建（下一节），
+把二进制放到 `PATH` 里的任意位置即可。
 
-有一件事它不会替你做：装好至少一个 Craft 应用。Craft Agent 只负责驱动它们，
-不负责首次安装或卸载。
+**应用是另一回事 —— Craft Agent 会装。** 一台新机器上放一个二进制就够：在窗口里选中应用
+点「安装」，或者在命令行里：
+
+```bash
+craft-agent install deckcraft        # 没装就装，装了就是升级
+```
+
+它和升级是同一条代码路径，因为在磁盘上做的是同一件事：下载、核对校验和、挂载镜像、
+验签、把应用包放到该在的位置。区别只有两点：落到哪（`/Applications`，写不进去时退到
+`~/Applications`），以及要不要把旧副本留成备份。
+
+卸载仍然归你：把应用拖进废纸篓。下次打开界面，它就会显示成未安装。
 
 ## 从源码构建
 
@@ -176,7 +187,8 @@ python3 tools/preview_mock.py 8799   # 用造出来的数据喂 Wails 绑定，�
 craft-agent                        # 打开状态面板
 craft-agent apps                   # 列出套件与本机状态（排查「为什么连不上」先跑这个）
 craft-agent versions               # 本机版本 vs 远端最新
-craft-agent update deckcraft       # 升级到最新（--dry-run 只挑安装包，不下载）
+craft-agent install deckcraft      # 安装，或已装则升级（--dry-run 只挑安装包，不下载）
+craft-agent update deckcraft       # 只做升级；没装的应用会被拒绝并提示用 install
 craft-agent run deckcraft slide.inspect
 craft-agent run deckcraft file.new '{"blank":true}'
 craft-agent mcp                    # MCP stdio 模式
@@ -229,12 +241,15 @@ document（隐式，无参数，只能靠 window.next 切）
 
 **封装层（推荐先用）** —— 一次调用完成一个意图，结果由应用自己回报：
 
-| 工具 | 作用 | 替代的裸命令序列 |
-|---|---|---|
-| `craft_page` | 建页 / 切页 / 删页 / 复制 / 移动，并保证结束后停在确定页 | `slide.new` + 自己记得 `slide.go` |
-| `craft_text` | 新建或改写文本框并排版（字体/字号/加粗/颜色/对齐/锚点/项目符号），返回生效值与落页校验 | `insert.textBox → edit.select → text.edit → text.selectAll → format.fontDialog → format.align → text.exit` |
-| `craft_style` | 按 id 批量排版，可跨页，逐条回报成功/失败 | 每个形状重复上面 6 条 |
-| `craft_batch` | 一次发多条命令，逐步返回结果，遇错即停；`slide` 可先钉页 | 每条命令一轮往返 |
+| 工具 | 适用范围 | 作用 | 替代的裸命令序列 |
+|---|---|---|---|
+| `deckcraft_page` | DeckCraft | 建页 / 切页 / 删页 / 复制 / 移动，并保证结束后停在确定页 | `slide.new` + 自己记得 `slide.go` |
+| `deckcraft_text` | DeckCraft | 新建或改写文本框并排版（字体/字号/加粗/颜色/对齐/锚点/项目符号），返回生效值与落页校验 | `insert.textBox → edit.select → text.edit → text.selectAll → format.fontDialog → format.align → text.exit` |
+| `deckcraft_style` | DeckCraft | 按 id 批量排版，可跨页，逐条回报成功/失败 | 每个形状重复上面 6 条 |
+| `craft_batch` | 任意应用 | 一次发多条命令，逐步返回结果，遇错即停；`slide` 可先钉页 | 每条命令一轮往返 |
+
+`craft_doc` 和 `craft_batch` 是通用的 —— 它们对幻灯片模型不做任何假设。`deckcraft_` 前缀
+是同一句承诺的另一半：那三个工具在别的应用上直接拒绝，而不是跑到一半才发现模型不存在。
 
 **裸通道（兜底）**：
 
@@ -248,24 +263,45 @@ document（隐式，无参数，只能靠 window.next 切）
 | `craft_screenshot` | 截一张窗口图落盘，返回路径 |
 | `craft_close` | 断开（并结束本会话启动的进程） |
 
-## 为什么要有封装层
+## 为什么自研这几个 deckcraft 命令
 
-控制通道本身够全（377 条命令），但**有些命令依赖一个 agent 看不见的状态**，裸调会被反复绊住。
-下面几条都是实测出来的，不是推测：
+控制通道是完整的：应用能做的它都能做。但它不是模型需要的那种完整 ——
+**它只有图元，没有意图。**
+
+「把标题放到第 3 页，40pt、加粗、居中」这件事背后没有一条命令。有的是七条：
+`insert.textBox`、`edit.select`、`text.edit`、`text.selectAll`、`format.fontDialog`、
+`format.align`、`text.exit`。每一条只有在「上一条留下了正确的隐式状态」时才有意义：
+正确形状里的文本选区、正确的页、正确的文档。而这些状态调用方一个都看不见，
+也一个都不跨调用存活。
+
+所以缺的不是更多命令，是**记账**。而记账恰恰是模型做不稳的事 —— 它唯一的反馈是工具返回值，
+而这些失败全是静默的：
+
+| 必须记住的状态 | 忘了会发生什么 |
+|---|---|
+| 当前是第几页 | insert 落到别的页；调用照样报成功 |
+| 这个 id 在不在当前页 | `edit.select` 回 `{"selected":[]}`；不算错误 |
+| 有没有文本选区 | `format.*` 回 `null` 或 `select text or a shape` |
+| 当前是哪份文档 | 整次写入落进另一个文件；任何地方都不报错 |
+
+静默失败没法靠「看工具输出」调试。只能由**能回读状态的东西**去避免 —— 而那个东西只能是代码。
+
+每一行的依据都在 DeckCraft 0.11.1 上实测过：
 
 1. **`format.*` 全家没有 `ids` 参数**，只作用于当前文本选区。选区又不跨调用存活，
    所以「给一个文本框设字体」在裸通道上是 6 条命令的固定舞蹈，中间任何一步失败都只是
    `null` 或一句 `select text or a shape`。
-   → `craft_text` / `craft_style` 把这段收进去，并用 `format.state` 回读**应用自己报的生效值**。
+   → `deckcraft_text` / `deckcraft_style` 把这段收进去，并用 `format.state` 回读
+   **应用自己报的生效值**。
 
 2. **跨页 `edit.select` 不报错，只回 `{"selected":[]}`**。形状 id 只在它所在的页有效，
    但通道不会告诉你「这个 id 在别的页」。
-   → 封装层先 `slide.inspect` 定位形状所在页、切过去，再检查 `selected` 里到底有没有它；
+   → 工具先 `slide.inspect` 定位形状所在页、切过去，再检查 `selected` 里到底有没有它；
    选不中就中止并说明原因，不继续发格式命令。
 
 3. **`enabled` 是运行时上下文，不是「命令存不存在」**。没有文本选区时 `format.*`、
    `text.selectAll` 的 `enabled` 都是 `false`。早期版本按 `enabled` 过滤，结果是模型永远
-   搜不到格式类命令、封装层误判应用不支持而拒绝执行。
+   搜不到格式类命令、工具误判应用不支持而拒绝执行。
    → 存在性判断只看 id；`enabled` 只作为提示。
 
 4. **文档层没有任何参数，只能靠 `window.next {index}` 切**。用户手动新建/切换文档后，
@@ -276,15 +312,32 @@ document（隐式，无参数，只能靠 window.next 切）
 
 5. **`insert.*` 没有页参数**，只跟当前页。`slide.new` 本身会切页，但
    `design.background {index}` 这类命令会顺手把活动页切回去，后面的 insert 就全落到别的页上。
-   → `craft_page` 建页后显式 `slide.go`；`craft_text` 回报 `verified.onSlide`；
+   → `deckcraft_page` 建页后显式 `slide.go`；`deckcraft_text` 回报 `verified.onSlide`；
    `craft_batch` 支持 `slide` 先钉页。
 
 一个对照：把「一页标题 + 两段正文 + 统一改一遍字号」这件事，裸通道要 20 条左右命令、
-其中至少 4 次调用会因选区问题失败重试；用封装层是 1 次 `craft_text` + 1 次 `craft_style`，
-且失败会明确落在某个 id 上。
+其中至少 4 次调用会因选区问题失败重试；用这几个工具是 1 次 `deckcraft_text` +
+1 次 `deckcraft_style`，且失败会明确落在某个 id 上。
 
-设计约定仍然成立：**一次命令是用户的一次撤销步**。`craft_batch` 只是把多条命令放进一次网络
-往返，不会把它们合成一个原子操作 —— 用户按一次 Cmd+Z 撤销的仍然是一步。
+### 为什么前缀是 deckcraft_
+
+因为它们假设的模型是 DeckCraft 的：幻灯片、文本框、作用于选区的 `format.*`。
+WordCraft、GridCraft 可能根本没有 `text.selectAll`；PdfCraft 的「页」是文档页，不是幻灯片。
+叫 `craft_text` 等于承诺一个没测过的可移植性；叫 `deckcraft_text` 把范围写进名字，
+并且由工具强制执行 —— 换到别的应用上直接拒绝，指回 `craft_run`。
+
+`craft_doc` 和 `craft_batch` 保留通用前缀，因为它们确实是通用的：一个搬运命令、
+一个看住文档身份，都不假设命令的语义。
+
+### 它们刻意不做什么
+
+- **不做富文本分片**：一次调用一种格式。段落里单独加粗一个词，仍然要
+  `text.find` + `text.select` + `format.*` 手工定位。
+- **不做事务**：`craft_batch` 在第 7 步失败，前 6 步照样生效，目前没有可回滚的快照。
+- **不做排版引擎**：你给什么属性就设什么属性，不会替你决定标题该是 40pt。
+
+设计约定仍然成立：**一次命令是用户的一次撤销步**。`craft_batch` 省的是网络往返，
+不是撤销粒度 —— Cmd+Z 撤销的仍然是一步。
 
 ## 更新
 
@@ -293,8 +346,8 @@ document（隐式，无参数，只能靠 window.next 切）
 - `internal/release` 回答「最新是多少」。每次启动都查，走官方聚合 feed（13 个应用一次拿齐），
   失败回落 GitHub，结果缓存 6 小时。GitHub 匿名限流 60 次/小时，套件十几个应用，
   一开机就能把额度烧光 —— 这是先查 feed 的唯一原因。
-- `internal/update` 回答「怎么装上去」。只在用户点更新（或 `craft-agent update`）时跑一次，
-  会下载上百 MB、挂载磁盘镜像、替换 `/Applications` 里的应用包。
+- `internal/update` 回答「怎么装上去」。只在用户点安装/更新（或跑 `craft-agent install`）时
+  跑一次，会下载上百 MB、挂载磁盘镜像，把应用包放到位 —— 首次安装是创建，之后是替换。
 
 顺序固定，任何一步失败都停在原地：
 
@@ -327,9 +380,9 @@ document（隐式，无参数，只能靠 window.next 切）
 - 内置 agent 对话**故意没有做**：这个项目的定位是「给第三方 AI 提供能力 + 给人看清状态」。
 - MCP 工具目前是 12 个（1 文档 + 4 封装 + 7 元工具）；`--tools core|full` 的命令级工具生成仍预留，
   一个应用几百条命令，全开会把模型上下文塞满。
-- 封装层假设应用提供 `insert.textBox` / `text.selectAll` / `format.fontDialog` 等命令。
-  用之前会核对该应用的命令表，缺哪条就明确拒绝并让你退回 `craft_run` ——
-  WordCraft 之类没实测过的应用可能只能走裸通道。
+- `deckcraft_*` 假定的是 DeckCraft 的模型（`insert.textBox` / `text.selectAll` /
+  `format.fontDialog`）。用之前会核对该应用的命令表，缺哪条就明确拒绝并让你退回
+  `craft_run`；换到别的应用上直接拒绝。
 - 封装层不做「写前快照」：`craft_batch` 中途失败会停，但已执行的那些步仍然生效，
   需要回退得靠用户的撤销，或后续加 `document.inspect` 快照 + 重建。
 - **文档身份只能靠 `title + path` 认**，因为通道不发布文档 id。后果是两个：
@@ -339,7 +392,8 @@ document（隐式，无参数，只能靠 window.next 切）
   它是唯一能拿到文档列表的办法，别在用户正在操作时高频调用。
 - 文档锚点是**会话级单一目标**：同时要改两份文档时必须显式 `craft_doc use` 交替切换，
   没有「一次写入多个文档」的并行能力 —— 这受限于通道本身，不是封装层偷懒。
-- 更新只处理**已安装**的应用：`update` 不负责首次安装。
+- 首次安装没有「已装副本」可比对签名团队，所以只做严格自检；
+  「签名方必须与已装版本一致」这条只对升级成立。
 - 备份 `<App>.app.old-<时间>` 不会被自动清理，装过几版就是几个目录，需要手动删。
 - 没有批量更新：一次一个应用，失败只影响那一个。
 - 不装预发布：feed 里 `prerelease` 为 true 的发布照常显示版本号，但界面不会提示升级到它。

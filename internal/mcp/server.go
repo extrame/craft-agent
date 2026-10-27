@@ -126,13 +126,16 @@ Available apps in this session: %s.
 Two ways in, and the composite tools come first:
 
 A. Composite tools — one call does a whole intent, and the result is verified by the app itself:
-   craft_doc   — the DOCUMENT layer: info / list / use / new / close / anchor / release.
-   craft_page  — add/switch/delete/duplicate/move a page; always leaves you on a known page.
-   craft_text  — create or restyle a text box (font, size, bold, colour, align, anchor, bullets) in ONE call.
-   craft_style — restyle existing shapes by id, across pages, with per-shape success reporting.
-   craft_batch — run many commands in one call, stop at the first failure; pass slide to pin the page.
-   Prefer these whenever the intent matches. The raw channel needs a text selection that you cannot see,
-   so a chain of format.* commands will often fail with "select text or a shape".
+   craft_doc        — the DOCUMENT layer (any app): info / list / use / new / close / anchor / release.
+   deckcraft_page   — DeckCraft only. add/switch/delete/duplicate/move a page; always leaves you on a known page.
+   deckcraft_text   — DeckCraft only. Create or restyle a text box (font, size, bold, colour, align, anchor,
+                      bullets) in ONE call.
+   deckcraft_style  — DeckCraft only. Restyle existing shapes by id, across pages, with per-shape reporting.
+   craft_batch      — any app: run many commands in one call, stop at the first failure; pass slide to pin the page.
+   Prefer these whenever the intent matches. The deckcraft_* tools exist because the channel has no command
+   that means "typeset this text box": it only has primitives (insert.textBox, format.*) that act on a text
+   selection you cannot see and that does not survive a call. On any app other than DeckCraft they are
+   refused by design — use craft_run with that app's own command table.
 
 B. Raw channel — for anything the composites do not cover:
    1. craft_apps — what is installed and already connected.
@@ -146,7 +149,7 @@ Rules that save you a lot of pain:
   The document has no parameter at all: every write goes to the active document. Each write tool therefore
   anchors the active document on first use and REFUSES to run if it changed — the user may have opened another
   document. When a write is refused for that reason, call craft_doc (list → use) instead of working around it.
-- insert.* has no page parameter; it follows the active page. Call craft_page action=goto (or craft_batch slide=N)
+- insert.* has no page parameter; it follows the active page. Call deckcraft_page action=goto (or craft_batch slide=N)
   before inserting, and trust the returned verified.onSlide to prove where the shape landed.
 - Ids are only valid on the page the shape lives on. Read the deck before using an id you got earlier.
 - Never build a layout out of dozens of craft_run calls; put them in craft_batch with verify=true.
@@ -513,13 +516,13 @@ func errResult(err error) *mcp.CallToolResult {
 func hintFor(msg string) string {
 	switch {
 	case strings.Contains(msg, "select text or a shape"):
-		return "提示：格式命令作用于当前文本选区。craft_run 只发一条命令、不会替你建选区；改用 craft_style（自动 select → text.edit → selectAll → 套格式），或先发 edit.select → text.edit → text.selectAll。"
+		return "提示：格式命令作用于当前文本选区。craft_run 只发一条命令、不会替你建选区；DeckCraft 上改用 deckcraft_style（自动 select → text.edit → selectAll → 套格式）；其他应用只能自己先发 edit.select → text.edit → text.selectAll 建立选区。"
 	case strings.Contains(msg, "no presentation open"):
-		return "提示：还没有打开的文档。先用 craft_page action=add 建页，或 craft_run 执行 file.new。"
+		return "提示：还没有打开的文档。DeckCraft 上用 deckcraft_page action=add 建页；其他应用用 craft_run 执行 file.new。"
 	case strings.Contains(msg, "not available right now: no slides"):
-		return "提示：文档里还没有页。先用 craft_page action=add。"
+		return "提示：文档里还没有页。DeckCraft 上用 deckcraft_page action=add。"
 	case strings.HasPrefix(msg, "engine.execute 被拒绝: no shape"):
-		return "提示：这个形状不在当前页。id 只在它所在的页有效，用 craft_inspect 或 craft_page 先切页。"
+		return "提示：这个形状不在当前页。id 只在它所在的页有效，用 craft_inspect 先看清页号，DeckCraft 上再用 deckcraft_page 切页。"
 	}
 	return ""
 }

@@ -126,10 +126,12 @@ The raw channel is complete — it can do everything the app can do — but seve
 depend on state that an agent cannot see. Passing them straight through produces failures
 that look like "the app is broken" while the app is behaving exactly as documented above.
 
-`craft_text`, `craft_style`, `craft_page` and `craft_batch` fold that invisible state
-handling into one call each, and `craft_doc` adds the document-anchor guard that the
-protocol itself cannot express. Everything they do could be done with `engine.execute`;
-they exist so that it does not have to be re-derived on every call.
+`deckcraft_text`, `deckcraft_style`, `deckcraft_page` and `craft_batch` fold that invisible
+state handling into one call each, and `craft_doc` adds the document-anchor guard that the
+protocol itself cannot express. Everything they do could be done with `engine.execute`; they
+exist so that it does not have to be re-derived on every call. The `deckcraft_` prefix marks
+the three that assume this particular slide-and-text-box model — they refuse on any other app,
+because nothing else here was measured with text boxes on slides.
 
 ## What this document does not claim
 

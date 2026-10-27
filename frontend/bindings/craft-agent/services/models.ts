@@ -14,14 +14,15 @@ export interface DocumentView {
 }
 
 /**
- * InstallResult 是一次安装的结果。Manual 为 true 表示只下载并校验了安装包，
- * 真正的安装要用户自己在系统里完成。
+ * InstallResult 是一次安装的结果。Fresh 表示原本没装、这是第一次装；
+ * Manual 为 true 表示只下载并校验了安装包，真正的安装要用户自己在系统里完成。
  */
 export interface InstallResult {
     "appId": string;
     "version": string;
     "path": string;
     "backup"?: string;
+    "fresh"?: boolean;
     "manual"?: boolean;
     "relaunched": boolean;
     "durationMs": number;

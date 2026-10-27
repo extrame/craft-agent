@@ -50,8 +50,9 @@ This project solves **letting an agent act, with a human able to see it**:
 
 | | Launcher | Craft Agent |
 |---|---|---|
-| First install / uninstall | ✅ | ❌ not handled — install first |
+| First install | ✅ | ✅ same path as an upgrade: checksum → signature → put in place |
 | Upgrade | ✅ | ✅ download → checksum → verify signature → swap → keep backup |
+| Uninstall | ✅ | ❌ drag the app to the Trash |
 | App state | a list | list + control endpoint + process + open document |
 | Agent access | ❌ | ✅ one MCP server for the whole suite |
 | Audit trail | ❌ | ✅ cross-process log, AI actions separated from local ones |
@@ -125,7 +126,7 @@ internal/
   host/host.go              process host: discover, launch, assign endpoints, registry
   journal/journal.go        cross-process activity log (JSONL, rotates)
   mcp/server.go             MCP server: meta tools + command-table discovery
-  mcp/compose.go            craft_text / craft_style / craft_page / craft_batch
+  mcp/compose.go            deckcraft_text / deckcraft_style / deckcraft_page / craft_batch
   mcp/doc.go                craft_doc: document anchor and pre-write guard
   release/feed.go           latest versions: official feed first, GitHub fallback, 6h cache
   release/installed.go      local versions from Info.plist / file version / --version
@@ -138,11 +139,22 @@ docs/control-protocol.md    what we measured about the control channel
 
 ## Install
 
-There are no prebuilt downloads yet: this is 0.1.0 and the interface still moves. Build it
-from source (next section) and put the binary anywhere on your `PATH`.
+There are no prebuilt downloads for Craft Agent itself yet: this is 0.1.0 and the interface
+still moves. Build it from source (next section) and put the binary anywhere on your `PATH`.
 
-One thing is required, and it is not installed for you: at least one Craft app. Craft Agent
-drives them; it does not install or uninstall them.
+**The apps are a different matter — Craft Agent installs those.** Paste the binary on a fresh
+machine, pick an app, press *Install*; or from a shell:
+
+```bash
+craft-agent install deckcraft        # first install, or upgrade if already there
+```
+
+It is the same code path as an upgrade, because on disk it is the same job: download, verify
+the checksum, mount the image, verify the signature, put the bundle where it belongs. The only
+differences are the destination (`/Applications`, or `~/Applications` when `/Applications` is
+not writable) and whether an existing copy is moved aside as a backup.
+
+Uninstalling is still yours: drag the app to the Trash. Craft Agent will notice it is gone.
 
 ## Build from source
 
@@ -184,7 +196,8 @@ a browser. It is not part of the build and never enters the binary.
 craft-agent                        # the status window
 craft-agent apps                   # suite + local state (run this first when "it won't connect")
 craft-agent versions               # local version vs latest release
-craft-agent update deckcraft       # upgrade in place (--dry-run picks the asset only)
+craft-agent install deckcraft      # install, or upgrade if already installed (--dry-run: pick the asset only)
+craft-agent update deckcraft       # upgrade only; refuses an app that is not installed
 craft-agent run deckcraft slide.inspect
 craft-agent run deckcraft file.new '{"blank":true}'
 craft-agent mcp                    # MCP over stdio
@@ -238,64 +251,99 @@ document   implicit, no parameters — can only be switched with window.next
 
 **Intent layer** — one call per intent, result verified by the app itself:
 
-| Tool | What it does | Raw sequence it replaces |
-|---|---|---|
-| `craft_page` | add / go to / delete / duplicate / move a page, ending on a known page | `slide.new` plus remembering to `slide.go` |
-| `craft_text` | create or rewrite a text box with typography (font, size, bold, colour, alignment, anchor, bullets) and report what the app actually applied | `insert.textBox → edit.select → text.edit → text.selectAll → format.fontDialog → format.align → text.exit` |
-| `craft_style` | restyle shapes by id, across pages, reporting per-shape success or failure | the same six commands, per shape |
-| `craft_batch` | many commands in one round trip, stopping on error, with an optional page pin | one round trip per command |
+| Tool | Applies to | What it does | Raw sequence it replaces |
+|---|---|---|---|
+| `deckcraft_page` | DeckCraft | add / go to / delete / duplicate / move a page, ending on a known page | `slide.new` plus remembering to `slide.go` |
+| `deckcraft_text` | DeckCraft | create or rewrite a text box with typography (font, size, bold, colour, alignment, anchor, bullets) and report what the app actually applied | `insert.textBox → edit.select → text.edit → text.selectAll → format.fontDialog → format.align → text.exit` |
+| `deckcraft_style` | DeckCraft | restyle shapes by id, across pages, reporting per-shape success or failure | the same six commands, per shape |
+| `craft_batch` | any app | many commands in one round trip, stopping on error, with an optional page pin | one round trip per command |
 
-**Raw channel** — the escape hatch:
+`craft_doc` and `craft_batch` are generic — they assume nothing about slides. The `deckcraft_`
+prefix is the other half of that promise: those three tools refuse to run on any other app,
+rather than fail halfway through a model that does not exist there.
 
-| Tool | What it does |
+## Why the `deckcraft_*` commands exist
+
+The control channel is complete: it can do everything the app can do. It is not complete in
+the sense a model needs, because **it has primitives, not intents.**
+
+"Put this title on slide 3, 40pt bold, centred" has no command behind it. There are seven:
+`insert.textBox`, `edit.select`, `text.edit`, `text.selectAll`, `format.fontDialog`,
+`format.align`, `text.exit` — and each one only means anything if the previous one left the
+right invisible state behind: a text selection, inside the right shape, on the right page, in
+the right document. None of that state is visible to the caller, and none of it survives a
+round trip.
+
+So the missing layer is not more commands. It is **bookkeeping** — and bookkeeping is exactly
+what a model cannot do reliably when its only feedback is a tool result, because every one of
+those failures is silent:
+
+| the state that has to be tracked | what happens when it is forgotten |
 |---|---|
-| `craft_apps` | list the suite with install / online / endpoint state |
-| `craft_open` | attach to an app, launching it if needed |
-| `craft_inspect` | read the active document: pages, shape ids, selection |
-| `craft_run` | execute one command (parameters documented per command); pre-write guard applies |
-| `craft_commands` | search that app's command table |
-| `craft_screenshot` | capture the window to a file, return the path |
-| `craft_close` | detach, and stop what this session started |
+| which page is active | the insert lands on another page; the call still reports success |
+| whether the id is on this page | `edit.select` returns `{"selected":[]}`; not an error |
+| whether a text selection exists | `format.*` returns `null` or `select text or a shape` |
+| which document is active | the whole write lands in a different file; no error anywhere |
 
-## Why the intent layer exists
+A silent failure cannot be debugged by whoever sees only the tool output. It has to be
+prevented by something that can read the state back — and that something has to be code.
 
-The raw channel is complete, but some commands depend on state an agent cannot see. Each of
-these was measured, not assumed:
+The measurements behind each row, all on DeckCraft 0.11.1:
 
 1. **`format.*` has no `ids` parameter.** It formats the current text selection, which does
-   not survive across calls. Setting one text box's font is a fixed six-command dance, and
-   a step failing just returns `null` or `select text or a shape`.
-   → `craft_text` and `craft_style` fold it in and read back `format.state`, so the reported
-   values are the app's own.
+   not survive across calls. Setting one text box's font is a fixed six-command dance, and a
+   step failing just returns `null` or `select text or a shape`.
+   → `deckcraft_text` and `deckcraft_style` fold it in and read back `format.state`, so the
+   reported values are the app's own.
 
-2. **A cross-page `edit.select` does not error; it returns `{"selected":[]}`.** Shape ids
-   are only valid on their own page, and the channel never says so.
-   → The intent layer finds the shape's page with `slide.inspect`, switches there, then
-   checks whether it is actually in `selected`. If not, it stops and says why.
+2. **A cross-page `edit.select` does not error; it returns `{"selected":[]}`.** Shape ids are
+   only valid on their own page, and the channel never says so.
+   → The tool finds the shape's page with `slide.inspect`, switches there, then checks whether
+   it is actually in `selected`. If not, it stops and says why.
 
-3. **`enabled` is runtime context, not availability.** With no text selection, `format.*`
-   and `text.selectAll` report `enabled: false`. An earlier version filtered by `enabled`
-   and the model could never find formatting commands at all.
+3. **`enabled` is runtime context, not availability.** With no text selection, `format.*` and
+   `text.selectAll` report `enabled: false`. An earlier version filtered by `enabled` and the
+   model could never find formatting commands at all.
    → Existence is decided by `id`; `enabled` is only a hint.
 
-4. **The document layer has no parameters.** After you manually create or switch a
-   document, an agent's next `insert` writes into *a different document*, silently.
-   → Every write anchors on the active document (a `title + path` fingerprint from
-   `file.info`) and compares before writing; on drift it **refuses to send the command** and
-   explains how to switch back. Document-level commands (`file.new`, `window.next`,
-   `file.close`) count as explicit intent and re-anchor afterwards.
+4. **The document layer has no parameters.** After you manually create or switch a document,
+   an agent's next `insert` writes into *a different document*, silently.
+   → Every write anchors on the active document (a `title + path` fingerprint from `file.info`)
+   and compares before writing; on drift it **refuses to send the command** and explains how to
+   switch back. Document-level commands (`file.new`, `window.next`, `file.close`) count as
+   explicit intent and re-anchor afterwards.
 
-5. **`insert.*` takes no page argument.** `slide.new` switches the page as a side effect,
-   but `design.background {index}` switches it back, so following inserts land elsewhere.
-   → `craft_page` pins the page after creating it, `craft_text` reports `verified.onSlide`,
-   and `craft_batch` accepts a page to pin first.
+5. **`insert.*` takes no page argument.** `slide.new` switches the page as a side effect, but
+   `design.background {index}` switches it back, so following inserts land elsewhere.
+   → `deckcraft_page` pins the page after creating it, `deckcraft_text` reports
+   `verified.onSlide`, and `craft_batch` accepts a page to pin first.
 
-For scale: "one title plus two paragraphs, then restyle both" is about twenty raw commands,
-at least four of which fail on selection state and get retried. Through the intent layer it
-is one `craft_text` and one `craft_style`, and a failure names the id it failed on.
+For scale: "one title plus two paragraphs, then restyle both" is about twenty raw commands, at
+least four of which fail on selection state and get retried. Through these tools it is one
+`deckcraft_text` and one `deckcraft_style`, and a failure names the id it failed on.
 
-One convention still holds: **one command is one undo step**. `craft_batch` only removes
-round trips; it does not make the batch atomic. Cmd+Z still undoes one command.
+### Why the prefix is `deckcraft_`
+
+Because the model they assume is DeckCraft's: slides, text boxes, `format.*` acting on a
+selection. WordCraft or GridCraft may not have `text.selectAll` at all, and PdfCraft's page is
+a document page, not a slide. Calling them `craft_text` would promise a portability that was
+never measured; `deckcraft_text` puts the scope in the name, and the tool enforces it — on any
+other app it refuses and points at `craft_run`.
+
+`craft_doc` and `craft_batch` keep the generic prefix because they genuinely are generic: they
+move commands around and guard document identity without assuming what those commands mean.
+
+### What they deliberately do not do
+
+- **No rich-text runs.** One format per call. Bolding a single word inside a paragraph still
+  needs `text.find` + `text.select` + `format.*` by hand.
+- **No transaction.** A `craft_batch` that fails at step 7 leaves steps 1–6 applied. There is
+  no snapshot to roll back to yet.
+- **No layout engine.** They set the properties you name; they do not decide that a title
+  should be 40pt.
+
+One convention still holds: **one command is one undo step**. `craft_batch` removes round
+trips, not undo granularity; Cmd+Z still undoes one command.
 
 ## Updates
 
@@ -306,8 +354,8 @@ Two packages, because the timescales differ:
   caches for six hours. GitHub's anonymous limit is 60 requests per hour; a dozen apps at
   once would eat it on every launch — that is the only reason the feed comes first.
 - `internal/update` answers "how does it get onto disk". It runs once when you press
-  update, downloads a hundred-odd megabytes, mounts a disk image, and replaces the app
-  bundle in `/Applications`.
+  install or update, downloads a hundred-odd megabytes, mounts a disk image, and puts the app
+  bundle in place — creating it on a first install, replacing it afterwards.
 
 The order is fixed, and any failure stops where it happened:
 
@@ -345,9 +393,9 @@ The order is fixed, and any failure stops where it happened:
   give a human a clear view.
 - Twelve MCP tools today. Per-command tool generation (`--tools core|full`) stays reserved:
   a few hundred commands per app would fill a model's context.
-- The intent layer assumes `insert.textBox`, `text.selectAll`, `format.fontDialog` and
-  friends exist. It checks the app's command table first and refuses, pointing at
-  `craft_run`, if one is missing — an unmeasured app like WordCraft may only work raw.
+- The `deckcraft_*` tools assume DeckCraft's model (`insert.textBox`, `text.selectAll`,
+  `format.fontDialog`). They check the command table first and refuse, pointing at
+  `craft_run`, if one is missing — and they refuse on any other app outright.
 - No pre-write snapshot: a `craft_batch` that fails midway keeps the steps already applied.
   Rolling back is your undo, or a future `document.inspect` snapshot plus rebuild.
 - **Document identity is `title + path`**, because the protocol has no document id. Two
@@ -357,7 +405,9 @@ The order is fixed, and any failure stops where it happened:
   and it should not be polled while someone is working.
 - The anchor is a single target per session: to touch two documents you must alternate with
   `craft_doc use`. That is a limit of the channel, not of the wrapper.
-- `update` only handles **already installed** apps; it does not do first installs.
+- A first install has no previous copy to compare against, so only the strict signature
+  check runs; the "same signing team as the installed version" requirement can only apply
+  to an upgrade.
 - Backups (`<App>.app.old-<time>`) are never cleaned up automatically.
 - No batch updates: one app at a time, and a failure affects only that app.
 - Prereleases are not offered. If the feed marks a release `prerelease`, its version is

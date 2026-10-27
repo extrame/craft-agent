@@ -154,7 +154,8 @@ function renderApps() {
     tag.className = "app-row-tag";
     const ver = versionOf(st);
     if (!st.installed) {
-      tag.textContent = t("app.missing");
+      // 检查过更新之后就知道能装哪个版本，比只写「未安装」有用。
+      tag.textContent = st.latestVersion ? t("app.installable", { v: st.latestVersion }) : t("app.missing");
     } else if (st.updateAvailable && st.latestVersion) {
       tag.textContent = `v${ver || "?"} → v${st.latestVersion}`;
       tag.classList.add("is-update");
@@ -229,6 +230,8 @@ function renderDetail() {
   // 进度条的颜色跟着应用品牌色走，和左边的圆点对齐。
   els.actions.style.setProperty("--accent", st.app.accent);
   const busy = install !== null && install.appId === st.app.id;
+  // 没装但已经知道最新版本号，就能直接装 —— 首次安装和升级走的是同一条路。
+  const canInstall = !st.installed && !!st.latestVersion;
   if (busy) {
     els.actions.append(installProgress(install as UpdateProgress));
   } else if (st.updateAvailable && st.latestUrl) {
@@ -240,15 +243,25 @@ function renderDetail() {
       ),
       actionButton(t("action.openRelease"), () => void openRelease()),
     );
+  } else if (canInstall) {
+    els.actions.append(
+      actionButton(
+        autoInstall ? t("action.install", { v: st.latestVersion ?? "" }) : t("action.downloadUpdate"),
+        () => void doInstall(),
+        "primary",
+      ),
+      actionButton(t("action.openRelease"), () => void openRelease()),
+    );
   }
   if (busy) {
     // 安装期间应用会被请退，这时候不放「启动 / 断开」这类动作，
     // 免得用户点到一半被自己打断。
   } else if (!st.installed) {
-    if (st.latestUrl && !st.updateAvailable) {
+    if (st.latestUrl && !canInstall) {
+      // 连版本号都没有（feed 没覆盖到这个应用）时，只能把发布页交出去。
       els.actions.append(actionButton(t("action.openRelease"), () => void openRelease()));
     }
-    els.actions.append(actionHint(t("action.installHint")));
+    if (!canInstall) els.actions.append(actionHint(t("action.installHint")));
   } else if (st.connected) {
     els.actions.append(
       actionButton(t("action.screenshot"), () => void screenshot()),
@@ -485,7 +498,7 @@ async function openRelease() {
   }
 }
 
-// 点「更新」走的路：后端会在同一个调用里下载、校验、替换，进度经事件推回来。
+// 点「安装 / 更新」走的路：后端会在同一个调用里下载、校验、替换，进度经事件推回来。
 // 这段时间界面不能做别的动作 —— 后端也会拒绝同一个应用的第二次安装。
 async function doInstall() {
   if (!selected || install) return;
@@ -493,11 +506,13 @@ async function doInstall() {
   install = { appId: id, step: "download", percent: 0, bytes: 0, total: 0 };
   renderDetail();
   try {
-    const res: InstallResult = await AppService.InstallUpdate(id);
+    const res: InstallResult = await AppService.Install(id);
     if (res.manual) {
       toast(t("update.downloaded"));
     } else if (res.relaunched) {
       toast(t("update.restarted", { v: res.version }));
+    } else if (res.fresh) {
+      toast(t("update.installedFresh", { v: res.version }));
     } else {
       toast(t("update.installed", { v: res.version }));
     }

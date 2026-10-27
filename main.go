@@ -100,6 +100,8 @@ func main() {
 			os.Exit(runOnce(os.Args[2:]))
 		case "versions":
 			os.Exit(runVersions(os.Args[2:]))
+		case "install":
+			os.Exit(runInstall(os.Args[2:]))
 		case "update":
 			os.Exit(runUpdate(os.Args[2:]))
 		case "version", "--version", "-V":
@@ -122,6 +124,7 @@ func usage() {
                                                  以 MCP stdio 服务器运行（给 Cursor / Claude）
   craft-agent apps                               列出套件应用与本机状态
   craft-agent versions [--refresh]               列出本机版本与远端最新版本
+  craft-agent install <app> [--dry-run]          安装最新发布（含首次安装）
   craft-agent update <app> [--dry-run]            升级到最新发布（--dry-run 只查安装包）
   craft-agent run <app> <command> [json]          一次性执行命令，结果打印到 stdout
   craft-agent version                            显示版本
@@ -216,8 +219,19 @@ func executable() string {
 //
 // 进度写 stderr、结果写 stdout：和 mcp 模式同样的理由 ——
 // stdout 只留机器可读的东西。
-func runUpdate(args []string) int {
-	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+// runUpdate 与 runInstall 走同一条路：磁盘上要发生的事完全一样 ——
+// 下载、校验、挂载、验签、放到目标位置。差别只有两点：install 允许第一次装，
+// 而 update 要求已经装了（否则「更新」这个词没有指代对象）。
+func runUpdate(args []string) int { return runInstallCmd(args, true) }
+
+func runInstall(args []string) int { return runInstallCmd(args, false) }
+
+func runInstallCmd(args []string, requireInstalled bool) int {
+	verb, name := "安装", "install"
+	if requireInstalled {
+		verb, name = "更新", "update"
+	}
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	dry := fs.Bool("dry-run", false, "只挑出安装包并显示校验和，不下载")
 	dest := fs.String("dest", "", "装到指定目录（默认跟随现有副本的位置）")
@@ -242,7 +256,7 @@ func runUpdate(args []string) int {
 		return 2
 	}
 	if len(positional) < 1 {
-		fmt.Fprintln(os.Stderr, "用法: craft-agent update <app> [--dry-run] [--dest 目录]")
+		fmt.Fprintf(os.Stderr, "用法: craft-agent %s <app> [--dry-run] [--dest 目录]\n", name)
 		return 2
 	}
 	id := positional[0]
@@ -251,8 +265,8 @@ func runUpdate(args []string) int {
 		fmt.Fprintf(os.Stderr, "未知应用: %s\n", id)
 		return 2
 	}
-	if !app.Installed() {
-		fmt.Fprintf(os.Stderr, "%s 没有安装，更新无从谈起\n", app.Name)
+	if requireInstalled && !app.Installed() {
+		fmt.Fprintf(os.Stderr, "%s 没有安装；要装请用: craft-agent install %s\n", app.Name, app.ID)
 		return 1
 	}
 
@@ -298,11 +312,17 @@ func runUpdate(args []string) int {
 		return 1
 	}
 
+	// 首次安装时本机版本是空的：空串在表里显示成「—」，比编一个 0.0.0 诚实。
+	current := checker.Installed(app).Version
+	shown := current
+	if shown == "" {
+		shown = "—"
+	}
 	fmt.Fprintf(os.Stderr, "%s %s → %s\n  安装包 %s（%.1f MB）\n  校验和 %s…\n",
-		app.Name, checker.Installed(app).Version, rel.Version, asset.Name, float64(asset.Size)/(1<<20), asset.SHA256[:12])
+		app.Name, shown, rel.Version, asset.Name, float64(asset.Size)/(1<<20), asset.SHA256[:12])
 	if *dry {
 		fmt.Printf(`{"app":%q,"from":%q,"to":%q,"asset":%q,"size":%d,"sha256":%q}`+"\n",
-			app.ID, checker.Installed(app).Version, rel.Version, asset.Name, asset.Size, asset.SHA256)
+			app.ID, current, rel.Version, asset.Name, asset.Size, asset.SHA256)
 		return 0
 	}
 
@@ -332,7 +352,7 @@ func runUpdate(args []string) int {
 	})
 	fmt.Fprintln(os.Stderr)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "更新失败: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s失败: %v\n", verb, err)
 		return 1
 	}
 	raw, _ := json.Marshal(out)

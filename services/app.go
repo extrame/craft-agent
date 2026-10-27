@@ -262,13 +262,14 @@ type UpdateProgress struct {
 	Note    string `json:"note,omitempty"`
 }
 
-// InstallResult 是一次安装的结果。Manual 为 true 表示只下载并校验了安装包，
-// 真正的安装要用户自己在系统里完成。
+// InstallResult 是一次安装的结果。Fresh 表示原本没装、这是第一次装；
+// Manual 为 true 表示只下载并校验了安装包，真正的安装要用户自己在系统里完成。
 type InstallResult struct {
 	AppID      string `json:"appId"`
 	Version    string `json:"version"`
 	Path       string `json:"path"`
 	Backup     string `json:"backup,omitempty"`
+	Fresh      bool   `json:"fresh,omitempty"`
 	Manual     bool   `json:"manual,omitempty"`
 	Relaunched bool   `json:"relaunched"`
 	DurationMs int64  `json:"durationMs"`
@@ -277,23 +278,27 @@ type InstallResult struct {
 // CanAutoInstall 表示本平台能不能代用户完成安装。
 func (s *AppService) CanAutoInstall() bool { return runtime.GOOS == "darwin" }
 
-// InstallUpdate 下载并安装某个应用的最新发布。
+// Install 装上一个应用的最新发布：没装的装上，装了的换掉。
+//
+// 两条路共用同一段代码是有意的 —— 首次安装和升级在磁盘上做的是同一件事
+// （下载 → 校验 → 挂载 → 验签 → 放到目标位置），唯一的区别是目标位置
+// 来自现有副本还是默认目录，以及要不要留备份。
 //
 // 顺序是有讲究的：先确认有安装包、再退出应用、最后才换文件。
 // 任何一步失败都停在原地 —— 磁盘上的那份要么是旧的、要么是新的，
 // 不会出现「换了一半」的应用包。
-func (s *AppService) InstallUpdate(id string) (InstallResult, error) {
+func (s *AppService) Install(id string) (InstallResult, error) {
 	app, ok := craft.ByID(id)
 	if !ok {
 		return InstallResult{}, fmt.Errorf("未知应用: %s", id)
 	}
 	if !s.beginInstall(id) {
-		return InstallResult{}, fmt.Errorf("%s 正在更新中", app.Name)
+		return InstallResult{}, fmt.Errorf("%s 正在安装中", app.Name)
 	}
 	defer s.endInstall(id)
 
 	start := time.Now()
-	res := InstallResult{AppID: id}
+	res := InstallResult{AppID: id, Fresh: !app.Installed()}
 	fail := func(err error) (InstallResult, error) {
 		s.journal.Append(journal.Entry{
 			At: time.Now(), Source: "gui", Session: "gui", Kind: "update",
@@ -306,7 +311,7 @@ func (s *AppService) InstallUpdate(id string) (InstallResult, error) {
 
 	latest := s.rel.Snapshot().Apps[id]
 	if latest.Version == "" || latest.Tag == "" {
-		return fail(fmt.Errorf("还没有 %s 的最新版本信息，先点一次「检查更新」", app.Name))
+		return fail(fmt.Errorf("还没有 %s 的版本信息，先点一次「检查更新」", app.Name))
 	}
 
 	ctx, cancel := context.WithTimeout(s.ctx, 30*time.Minute)
@@ -367,10 +372,14 @@ func (s *AppService) InstallUpdate(id string) (InstallResult, error) {
 		}
 	}
 
+	detail := fmt.Sprintf("v%s → v%s", latest.Version, out.Version)
+	if res.Fresh {
+		detail = "安装 v" + out.Version
+	}
 	s.journal.Append(journal.Entry{
 		At: time.Now(), Source: "gui", Session: "gui", Kind: "update",
 		AppID: id, Command: "install", OK: true,
-		Detail:   fmt.Sprintf("v%s → v%s", latest.Version, out.Version),
+		Detail:   detail,
 		Duration: res.DurationMs,
 	})
 	return res, nil

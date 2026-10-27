@@ -74,14 +74,18 @@ export function Inspect(id: string): $CancellablePromise<$models.DocumentView> {
 }
 
 /**
- * InstallUpdate 下载并安装某个应用的最新发布。
+ * Install 装上一个应用的最新发布：没装的装上，装了的换掉。
+ * 
+ * 两条路共用同一段代码是有意的 —— 首次安装和升级在磁盘上做的是同一件事
+ * （下载 → 校验 → 挂载 → 验签 → 放到目标位置），唯一的区别是目标位置
+ * 来自现有副本还是默认目录，以及要不要留备份。
  * 
  * 顺序是有讲究的：先确认有安装包、再退出应用、最后才换文件。
  * 任何一步失败都停在原地 —— 磁盘上的那份要么是旧的、要么是新的，
  * 不会出现「换了一半」的应用包。
  */
-export function InstallUpdate(id: string): $CancellablePromise<$models.InstallResult> {
-    return $Call.ByID(1179325198, id);
+export function Install(id: string): $CancellablePromise<$models.InstallResult> {
+    return $Call.ByID(585305087, id);
 }
 
 /**

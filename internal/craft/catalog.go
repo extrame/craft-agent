@@ -39,6 +39,11 @@ type App struct {
 	ControlFlag string    `json:"controlFlag"`           // 启动控制通道的参数名
 }
 
+// DeckCraftID 是套件里唯一实测过「幻灯片 + 文本框 + 页」模型的成员。
+// 以 deckcraft_ 开头的 MCP 工具只对它成立，这层限定由 catalog 定义，
+// 免得散落在各个 handler 里写同一个字符串。
+const DeckCraftID = "deckcraft"
+
 // BundleID 是 macOS bundle id，也是探测安装位置时最可靠的依据。
 func (a App) BundleID() string { return "ai.storyteller." + a.ID }
 
