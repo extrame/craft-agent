@@ -289,8 +289,15 @@ means walking indexes until the identity read back is the same twice in a row �
 makes the UI flicker while it runs.
 
 `file.info` reports `{title, path, slides, dirty}` and **no document id**, so document
-identity can only be a `title + path` fingerprint. Save-as and rename look like "a
-different document"; two windows on the same file are indistinguishable.
+identity has to be agent-side bookkeeping. While a document is unsaved, the only
+fingerprint is its title — the agent anchors on it and refuses writes when it changes.
+Once the file is saved, `path` becomes the identity: the anchor upgrades to the file path
+and is persisted (`<dataDir>/anchors.json`), so a restarted app does not lose the
+connection to the file — the agent re-opens it by path with `file.open` and keeps writing
+to it. Save-as is not guessed through: a changed path with a live anchor means "bring the
+anchored file back", not "follow the new path", because nothing in the protocol can tell
+a save-as apart from switching to a different document. Two windows on the same file are
+still indistinguishable.
 
 This layer is DeckCraft's, and not even the whole suite shares it: FigCraft 0.11.2 has no
 `file.info` at all, and PdfCraft's unit is a page in a PDF rather than a slide.

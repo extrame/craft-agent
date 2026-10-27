@@ -447,9 +447,14 @@ The order is fixed, and any failure stops where it happened:
   running. Starting a window to read a menu is not a trade the status panel makes.
 - No pre-write snapshot: a `craft_batch` that fails midway keeps the steps already applied.
   Rolling back is your undo, or a future `document.inspect` snapshot plus rebuild.
-- **Document identity is `title + path`**, because the protocol has no document id. Two
-  consequences: save-as or rename looks like a new document (use `craft_doc anchor`), and
-  two windows on the same file cannot be told apart.
+- **Document identity starts as `title + path` and becomes `path` once the file is saved**,
+  because the protocol has no document id. The anchor is the agent's own bookkeeping,
+  persisted at `<dataDir>/anchors.json`: after a save the anchor upgrades to the file path,
+  and if the app was restarted (or the window moved on), the guard re-opens the anchored
+  file by path with `file.open` before writing. Save-as is the one case it will not guess
+  through: the guard brings the anchored file back instead of following the new path —
+  re-anchor with `craft_doc anchor` if the new file is what you want. Two windows on the
+  same file still cannot be told apart.
 - `craft_doc list` really does switch through every window and back, so the screen flickers
   and it should not be polled while someone is working.
 - The anchor is a single target per session: to touch two documents you must alternate with

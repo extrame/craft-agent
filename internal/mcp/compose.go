@@ -120,7 +120,7 @@ func (b *bridge) handlePage(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	if err := deckOnly(app, "deckcraft_page"); err != nil {
 		return errResult(err), nil
 	}
-	doc, err := b.guardDoc(ctx, c)
+	doc, _, err := b.guardDoc(ctx, app, c)
 	if err != nil {
 		return errResult(err), nil
 	}
@@ -227,7 +227,7 @@ func (b *bridge) handleText(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	if err := b.requireCommands(ctx, app, c, cmdTextBox, cmdSelect, cmdTextEdit, cmdTextSelectAll, cmdFontDialog, cmdFormatState); err != nil {
 		return errResult(err), nil
 	}
-	doc, err := b.guardDoc(ctx, c)
+	doc, _, err := b.guardDoc(ctx, app, c)
 	if err != nil {
 		return errResult(err), nil
 	}
@@ -338,7 +338,7 @@ func (b *bridge) handleStyle(ctx context.Context, req mcp.CallToolRequest) (*mcp
 	if len(ids) == 0 {
 		return errResult(fmt.Errorf("需要 ids（形状 id 数组）")), nil
 	}
-	doc, err := b.guardDoc(ctx, c)
+	doc, _, err := b.guardDoc(ctx, app, c)
 	if err != nil {
 		return errResult(err), nil
 	}
@@ -405,12 +405,13 @@ func (b *bridge) handleBatch(ctx context.Context, req mcp.CallToolRequest) (*mcp
 		return errResult(fmt.Errorf("steps 为空")), nil
 	}
 	var doc docIdentity
+	var guardNotes []string
 	// craft_batch 是通用工具，会用在没有文档层的应用上（FigCraft 没有 file.info）。
 	// 前提不成立时跳过守卫并注明，而不是让批次死在 unknown command 上。
 	docCapable := b.hasDocModel(ctx, app, c)
 	if docCapable {
-		var err error
-		if doc, err = b.guardDoc(ctx, c); err != nil {
+		doc, guardNotes, err = b.guardDoc(ctx, app, c)
+		if err != nil {
 			return errResult(err), nil
 		}
 	}
@@ -487,18 +488,21 @@ func (b *bridge) handleBatch(ctx context.Context, req mcp.CallToolRequest) (*mcp
 	}
 	if docCapable {
 		payload["document"] = doc
+		if len(guardNotes) > 0 {
+			payload["guardNotes"] = guardNotes
+		}
 	} else {
 		payload["document"] = nil
 		payload["guard"] = "none"
 		payload["note"] = docGuardNote
 	}
-	if len(docCommands) > 0 {
+	if len(docCommands) > 0 && docCapable {
 		payload["documentCommands"] = docCommands
 		after, docErr := b.readDoc(ctx, c)
 		if docErr == nil {
 			if !after.same(doc) {
 				payload["documentChanged"] = after
-				b.anchorNow(after)
+				b.anchorNow(app, after)
 			} else {
 				payload["document"] = after
 			}

@@ -101,7 +101,7 @@ func Serve(ctx context.Context, opts Options) error {
 	}
 	opts.rel = release.NewChecker(opts.Host.DataDir(), opts.Version)
 
-	b := &bridge{opts: opts, caps: map[string]map[string]bool{}}
+	b := &bridge{opts: opts, caps: map[string]map[string]bool{}, anchors: anchorStore{dataDir: opts.Host.DataDir()}}
 	b.registerMetaTools(s)
 	b.registerDocTools(s)
 	b.registerComposeTools(s)
@@ -182,9 +182,11 @@ type bridge struct {
 	caps  map[string]map[string]bool
 
 	// 文档锚点。控制通道没有 document 参数，写入只能落到「当前文档」，
-	// 所以这里记住会话开始时的那一份，写入前比对，变了就拒绝执行。
-	docMu  sync.Mutex
-	anchor *docIdentity
+	// 所以这里记住工作目标，写入前比对，变了先找回、找不回才拒绝。
+	// 内存为准，落盘在 <dataDir>/anchors.json：跨 MCP 会话存活 ——
+	// 昨天会话锚住的文件，今天新会话的守卫仍然认得（见 anchor.go）。
+	docMu   sync.Mutex
+	anchors anchorStore
 }
 
 func (b *bridge) registerMetaTools(s *server.MCPServer) {
@@ -301,6 +303,10 @@ func (b *bridge) handleInspect(ctx context.Context, req mcp.CallToolRequest) (*m
 	if err != nil {
 		return errResult(err), nil
 	}
+	app, err := b.resolveApp(req)
+	if err != nil {
+		return errResult(err), nil
+	}
 	raw, err := client.Document(ctx)
 	if err != nil {
 		return errResult(err), nil
@@ -313,7 +319,7 @@ func (b *bridge) handleInspect(ctx context.Context, req mcp.CallToolRequest) (*m
 	// 这里把它并进结果，调用方才不会把另一份文档的内容当成这一份。
 	if doc, err := b.readDoc(ctx, client); err == nil {
 		out["document"] = doc
-		if anchored, ok := b.anchorValue(); ok {
+		if anchored, ok := b.anchorValue(app); ok {
 			out["anchored"] = anchored
 			out["drifted"] = !anchored.same(doc)
 		}
@@ -341,11 +347,16 @@ func (b *bridge) handleRun(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 	// 守卫的前提是应用能回答「我在哪一份里」。FigCraft 这类没有 file.info 的应用
 	// 走降级模式：不守卫，但把这件事告诉调用方，由 agent 端的说明顶上。
 	guardDoc := !docCommand && !readOnlyCommand(command) && b.hasDocModel(ctx, app, client)
+	var guardNotes []string
 	if guardDoc {
-		// 写入前守卫：锚定的文档变了就不发命令，避免安静地写进另一份。
-		if _, err := b.guardDoc(ctx, client); err != nil {
+		// 写入前守卫：锚定的文档变了先找回（见 anchor.go），找不回才拒绝。
+		if _, guardNotes, err = b.guardDoc(ctx, app, client); err != nil {
 			b.record(app.ID, "command", command, false, err.Error(), 0)
 			return errResult(err), nil
+		}
+		if len(guardNotes) > 0 {
+			// 守卫自动动过锚点（保存升级 / 重新打开），流水里留痕。
+			b.record(app.ID, "guard", command, true, strings.Join(guardNotes, "；"), 0)
 		}
 	}
 
@@ -360,7 +371,7 @@ func (b *bridge) handleRun(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 
 	doc, docErr := b.readDoc(ctx, client)
 	if docErr == nil && docCommand {
-		b.anchorNow(doc)
+		b.anchorNow(app, doc)
 	}
 	payload := map[string]any{"app": app.ID, "command": command}
 	if docErr == nil {
@@ -369,6 +380,9 @@ func (b *bridge) handleRun(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 	if !guardDoc && !docCommand && !readOnlyCommand(command) {
 		payload["guard"] = "none"
 		payload["note"] = docGuardNote
+	}
+	if len(guardNotes) > 0 {
+		payload["guardNotes"] = guardNotes
 	}
 	if len(raw) > 0 {
 		payload["result"] = json.RawMessage(raw)

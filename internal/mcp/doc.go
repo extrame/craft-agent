@@ -102,47 +102,18 @@ func (b *bridge) hasDocModel(ctx context.Context, app craft.App, c *control.Clie
 const docGuardNote = "该应用不提供文档身份（命令表里没有 file.info），文档守卫不生效：" +
 	"写入始终作用于当前活动文档，切换文档后请先用该应用的 inspect 类命令确认落点。"
 
-// anchorNow 把当前文档记为本次会话的锚点。
-func (b *bridge) anchorNow(doc docIdentity) {
-	b.docMu.Lock()
-	copied := doc
-	b.anchor = &copied
-	b.docMu.Unlock()
-}
-
-// anchorValue 返回当前锚点（副本）。
-func (b *bridge) anchorValue() (docIdentity, bool) {
+// anchorNow 把当前文档记为该应用的锚点（内存 + 落盘，见 anchor.go）。
+func (b *bridge) anchorNow(app craft.App, doc docIdentity) {
 	b.docMu.Lock()
 	defer b.docMu.Unlock()
-	if b.anchor == nil {
-		return docIdentity{}, false
-	}
-	return *b.anchor, true
+	b.anchors.put(app.ID, doc)
 }
 
-// guardDoc 是所有写入路径的前置条件：确认还在同一次文档上。
-//
-// 没有锚点时自动锚定当前文档（会话第一次写入即锁定目标）；
-// 锚点存在但当前活动文档不同时，直接拒绝执行并说明怎么改。
-// 这是把「写错文档不报错」变成「写错文档立刻停」的唯一办法——
-// 因为控制通道根本没有 document 参数可以显式指定。
-func (b *bridge) guardDoc(ctx context.Context, c *control.Client) (docIdentity, error) {
-	cur, err := b.readDoc(ctx, c)
-	if err != nil {
-		return docIdentity{}, fmt.Errorf("读取当前文档失败: %w", err)
-	}
-	anchored, ok := b.anchorValue()
-	if !ok {
-		b.anchorNow(cur)
-		return cur, nil
-	}
-	if !anchored.same(cur) {
-		return cur, fmt.Errorf("文档已切换，命令未发送：本次会话锚定的是 %s，当前活动文档是 %s。\n"+
-			"控制通道没有 document 参数，所有写入都落在「当前文档」上，所以这次写入会被拒绝。\n"+
-			"确认要改当前文档：craft_doc {action:\"use\", index:<文档序号>}，或 craft_doc {action:\"anchor\"} 就地重锚。",
-			anchored, cur)
-	}
-	return cur, nil
+// anchorValue 返回当前锚点（副本）：本会话声明过的优先，否则读上个会话落盘的。
+func (b *bridge) anchorValue(app craft.App) (docIdentity, bool) {
+	b.docMu.Lock()
+	defer b.docMu.Unlock()
+	return b.anchors.get(app.ID)
 }
 
 // docEntry 是 craft_doc list 的一项。
@@ -227,7 +198,7 @@ func (b *bridge) handleDoc(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 			return errResult(err), nil
 		}
 		out := map[string]any{"app": app.ID, "document": cur}
-		if a, ok := b.anchorValue(); ok {
+		if a, ok := b.anchorValue(app); ok {
 			out["anchored"] = a
 			out["drifted"] = !a.same(cur)
 		} else {
@@ -249,7 +220,7 @@ func (b *bridge) handleDoc(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 			"current":   current,
 			"note":      "枚举过程会真实切换窗口再切回，界面上会看到一次闪动；越界索引是静默 no-op，所以连续两次读到同一文档即判定结束。",
 		}
-		if a, ok := b.anchorValue(); ok {
+		if a, ok := b.anchorValue(app); ok {
 			payload["anchored"] = a
 		}
 		b.record(app.ID, "command", "craft_doc:list", true, fmt.Sprintf("docs=%d", len(entries)), time.Since(start))
@@ -270,7 +241,7 @@ func (b *bridge) handleDoc(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 		if want, ok := argString(req, "title"); ok && want != "" && cur.Title != want {
 			return errResult(fmt.Errorf("已切到文档 %d，但标题是 %q 而不是 %q；未改变锚点", index, cur.Title, want)), nil
 		}
-		b.anchorNow(cur)
+		b.anchorNow(app, cur)
 		b.record(app.ID, "command", "craft_doc:use", true, fmt.Sprintf("#%d %s", index, cur.String()), time.Since(start))
 		return mcp.NewToolResultJSON(map[string]any{
 			"app":      app.ID,
@@ -297,7 +268,7 @@ func (b *bridge) handleDoc(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 		if err != nil {
 			return errResult(err), nil
 		}
-		b.anchorNow(cur)
+		b.anchorNow(app, cur)
 		b.record(app.ID, "command", "craft_doc:new", true, cur.String(), time.Since(start))
 		return mcp.NewToolResultJSON(map[string]any{
 			"app":      app.ID,
@@ -315,7 +286,7 @@ func (b *bridge) handleDoc(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 			return errResult(err), nil
 		}
 		after, _ := b.readDoc(ctx, c)
-		b.anchorNow(after)
+		b.anchorNow(app, after)
 		b.record(app.ID, "command", "craft_doc:close", true, cur.String(), time.Since(start))
 		return mcp.NewToolResultJSON(map[string]any{
 			"app":      app.ID,
@@ -329,13 +300,13 @@ func (b *bridge) handleDoc(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 		if err != nil {
 			return errResult(err), nil
 		}
-		b.anchorNow(cur)
+		b.anchorNow(app, cur)
 		b.record(app.ID, "command", "craft_doc:anchor", true, cur.String(), time.Since(start))
 		return mcp.NewToolResultJSON(map[string]any{"app": app.ID, "anchored": cur})
 
 	case "release":
 		b.docMu.Lock()
-		b.anchor = nil
+		b.anchors.drop(app.ID)
 		b.docMu.Unlock()
 		b.record(app.ID, "command", "craft_doc:release", true, "", time.Since(start))
 		return mcp.NewToolResultJSON(map[string]any{"app": app.ID, "anchored": nil})
