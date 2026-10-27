@@ -41,14 +41,14 @@ export interface App {
     "fallback": string;
 
     /**
-     * 控制通道形态
+     * 控制通道形态；空表示尚未实测
      */
-    "transport"?: Transport;
+    "control"?: Control;
 
     /**
-     * Transport 为 tcp 时的默认端口；0 表示由宿主分配
+     * ControlPort 时的默认端口；0 表示由宿主分配
      */
-    "defaultPort"?: number;
+    "port"?: number;
 
     /**
      * 启动控制通道的参数名
@@ -57,18 +57,31 @@ export interface App {
 }
 
 /**
- * Transport 是控制通道的形态。
+ * Control 决定 --control 后面跟的是什么。
  * 
- * 实测（DeckCraft 0.11.1 / PdfCraft）：两个应用的 ControlFlag 都是 --control，
- * 但参数含义不同 —— DeckCraft 要一个 TCP 端口号，PdfCraft 要一个 socket 文件路径。
- * 所以通道形态必须按应用声明，不能用统一约定。
+ * 实测（2026-10，四个已装应用逐个拉起、逐个读命令表）：
+ * 
+ * 	DeckCraft 0.11.1   --control 7990          应用自己监听端口
+ * 	FigCraft  0.11.2   --control 7991          同上
+ * 	CADCraft  0.13.0   --control 7994          同上，但多一个令牌文件 ~/.cache/cadcraft-control-7994.token
+ * 	PdfCraft  0.14.0   --control <文件路径>     应用把 {pid,port,token} 写进那个文件，端口自己挑
+ * 
+ * 所以「控制通道形态」是每个应用的属性，不是全局约定；同一个 --control
+ * 在三代实现里收的东西并不一样。
  */
-export enum Transport {
+export enum Control {
     /**
      * The Go zero value for the underlying type of the enum.
      */
     $zero = "",
 
-    TCP = "tcp",
-    Unix = "unix",
+    /**
+     * ControlPort：--control PORT，端口由宿主挑（或应用默认端口），应用监听 127.0.0.1:PORT。
+     */
+    ControlPort = "port",
+
+    /**
+     * ControlFile：--control PATH，应用把 {pid,port,token} 写进 PATH，客户端据此连它挑的端口。
+     */
+    ControlFile = "file",
 };

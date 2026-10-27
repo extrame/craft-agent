@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -34,8 +35,13 @@ type Event struct {
 }
 
 // Entry 是注册表里的一项：应用当前开在哪个端点、进程号是多少。
+//
+// Token 单独放一层：Endpoint 会随状态快照一路推到界面和 MCP 工具结果里，
+// 令牌不该出现在那儿；但 MCP 进程要能接管 GUI 拉起的实例，又必须拿到它。
+// 所以令牌只落在这份 0600 的注册表文件里。
 type Entry struct {
 	Endpoint  control.Endpoint `json:"endpoint"`
+	Token     string           `json:"token,omitempty"`
 	PID       int              `json:"pid"`
 	Version   string           `json:"version,omitempty"`
 	UpdatedAt time.Time        `json:"updatedAt"`
@@ -330,25 +336,29 @@ func (h *Host) launchLocked(ctx context.Context, inst *instance) (*control.Clien
 		return nil, fmt.Errorf("未找到 %s：检查 %s", app.Name, strings.Join(app.Executables(), " 或 "))
 	}
 
-	ep, err := h.allocateEndpoint(app)
+	base, arg, err := h.prepareTarget(app)
 	if err != nil {
 		inst.lastErr = err.Error()
 		return nil, err
 	}
-	args := app.ControlArgs(endpointArg(app, ep))
+	args := app.ControlArgs(arg)
 	cmd := exec.Command(exe, args...)
 	cmd.Dir = filepath.Dir(exe)
-	// 应用自己的日志别灌进我们的 stdout —— MCP 模式下 stdout 只能是 JSON-RPC。
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
+	// 应用自己的日志落到数据目录，**不要**接到本进程的 stdout/stderr：
+	// 命令行模式下那会把调用方的管道一直占着 —— 我们退出了，读端还在等 EOF。
+	if logFile, err := h.openLog(app); err == nil {
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+		defer logFile.Close()
+	}
 	if err := cmd.Start(); err != nil {
 		inst.lastErr = err.Error()
 		return nil, fmt.Errorf("启动 %s 失败: %w", app.Name, err)
 	}
 	inst.cmd = cmd
 	inst.pid = cmd.Process.Pid
-	inst.ep = ep
-	h.emit(Event{AppID: app.ID, Kind: "launch", Message: fmt.Sprintf("PID %d · %s", cmd.Process.Pid, ep)})
+	inst.ep = base
+	h.emit(Event{AppID: app.ID, Kind: "launch", Message: fmt.Sprintf("PID %d · %s", cmd.Process.Pid, app.DescribeControl())})
 
 	// 进程退出时清掉连接，避免界面显示「已连接」但其实是死通道。
 	go func(cmd *exec.Cmd) {
@@ -366,27 +376,39 @@ func (h *Host) launchLocked(ctx context.Context, inst *instance) (*control.Clien
 		}
 	}(cmd)
 
+	rendezvous := ""
+	if app.Control == craft.ControlFile {
+		rendezvous = arg
+	}
+	var lastErr error
 	deadline := time.Now().Add(h.opts.LaunchTimeout)
 	for {
 		if ctx.Err() != nil {
 			inst.lastErr = ctx.Err().Error()
 			return nil, ctx.Err()
 		}
-		client, err := control.Dial(ctx, ep, 1200*time.Millisecond)
-		if err == nil {
-			inst.client = client
-			inst.lastErr = ""
-			h.writeRegistry(app.ID, Entry{
-				Endpoint:  ep,
-				PID:       inst.pid,
-				Version:   inst.version,
-				UpdatedAt: time.Now(),
-			})
-			h.emit(Event{AppID: app.ID, Kind: "connect", Message: ep.String()})
-			return client, nil
+		if ep, err := h.liveEndpoint(app, base, rendezvous); err == nil {
+			client, derr := control.Dial(ctx, ep, 1200*time.Millisecond)
+			if derr == nil {
+				inst.client = client
+				inst.ep = ep
+				inst.lastErr = ""
+				h.writeRegistry(app.ID, Entry{
+					Endpoint:  ep,
+					PID:       inst.pid,
+					Version:   inst.version,
+					UpdatedAt: time.Now(),
+				})
+				h.emit(Event{AppID: app.ID, Kind: "connect", Message: ep.String()})
+				return client, nil
+			}
+			lastErr = derr
+			// 鉴权失败不立刻判死：应用刚起来时令牌文件可能还是上一次的，
+			// 每轮都会重读，等它写新的。等不到再由下面的超时分支报出来。
 		}
 		if time.Now().After(deadline) {
-			msg := fmt.Sprintf("%s 已启动但控制通道 %s 未就绪（该版本可能不支持 %s）", app.Name, ep, app.ControlFlag)
+			msg := fmt.Sprintf("%s 已启动但控制通道未就绪（%s；%s）",
+				app.Name, app.DescribeControl(), describeLaunchFailure(app, base, lastErr))
 			inst.lastErr = msg
 			h.emit(Event{AppID: app.ID, Kind: "error", Message: msg})
 			return nil, errors.New(msg)
@@ -395,23 +417,122 @@ func (h *Host) launchLocked(ctx context.Context, inst *instance) (*control.Clien
 	}
 }
 
-// endpointArg 把端点转成命令行参数：TCP 给端口号，Unix 给 socket 路径。
-func endpointArg(app craft.App, ep control.Endpoint) string {
-	if ep.Network == control.NetworkUnix {
-		return ep.Address
+// openLog 给应用进程的 stdout/stderr 找个落点。
+func (h *Host) openLog(app craft.App) (*os.File, error) {
+	dir := filepath.Join(h.opts.DataDir, "logs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
 	}
-	if app.DefaultPort > 0 && strings.HasSuffix(ep.Address, fmt.Sprintf(":%d", app.DefaultPort)) {
-		return fmt.Sprint(app.DefaultPort)
+	return os.OpenFile(filepath.Join(dir, app.ID+".log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+}
+
+func describeLaunchFailure(app craft.App, base control.Endpoint, err error) string {
+	if err == nil {
+		return "没有任何端点可试"
 	}
-	_, port, err := splitHostPort(ep.Address)
+	var authErr *control.AuthError
+	if errors.As(err, &authErr) {
+		if _, port, perr := splitHostPort(base.Address); perr == nil {
+			if n, _ := strconv.Atoi(port); n > 0 {
+				return fmt.Sprintf("控制通道要求令牌，但 %s 里的令牌不被接受（%v）", app.TokenPath(n), err)
+			}
+		}
+		return fmt.Sprintf("控制通道要求令牌，但令牌不被接受（%v）", err)
+	}
+	return err.Error()
+}
+
+// rendezvousPath 是 ControlFile 模式下交给应用的会合文件路径。
+//
+// 名字里刻意没有 .sock：里面是 JSON（pid/port/token），不是 socket。
+func (h *Host) rendezvousPath(appID string) string {
+	return filepath.Join(h.opts.DataDir, "run", appID+".control")
+}
+
+// Rendezvous 是 ControlFile 模式下应用写出来的会合信息。
+type Rendezvous struct {
+	PID   int    `json:"pid"`
+	Port  int    `json:"port"`
+	Token string `json:"token"`
+}
+
+func readRendezvous(path string) (Rendezvous, error) {
+	var rv Rendezvous
+	raw, err := os.ReadFile(path)
 	if err != nil {
+		return rv, err
+	}
+	if err := json.Unmarshal(raw, &rv); err != nil {
+		return rv, fmt.Errorf("会合文件不是合法 JSON: %w", err)
+	}
+	return rv, nil
+}
+
+// readToken 读端口模式下应用写的令牌文件。没有就是没有 —— 老一代应用不写。
+func readToken(app craft.App, port string) string {
+	n, err := strconv.Atoi(port)
+	if err != nil || n <= 0 {
 		return ""
 	}
-	return port
+	for _, path := range app.TokenPaths(n) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if token := strings.TrimSpace(string(raw)); token != "" {
+			return token
+		}
+	}
+	return ""
+}
+
+// prepareTarget 为一次新启动决定端点与 --control 的参数。
+func (h *Host) prepareTarget(app craft.App) (control.Endpoint, string, error) {
+	if app.Control == craft.ControlFile {
+		path := h.rendezvousPath(app.ID)
+		_ = os.Remove(path)
+		return control.Endpoint{Network: control.NetworkTCP}, path, nil
+	}
+	start := app.Port
+	if start <= 0 {
+		start = 7990
+	}
+	for port := start; port < start+40; port++ {
+		if portFree(port) {
+			return control.Endpoint{Network: control.NetworkTCP, Address: fmt.Sprintf("127.0.0.1:%d", port)}, strconv.Itoa(port), nil
+		}
+	}
+	return control.Endpoint{}, "", errors.New("找不到空闲端口")
+}
+
+// liveEndpoint 把「刚启动的应用」解析成真正可拨的端点。
+//
+// 端口模式：端口是我们给的，令牌文件要等应用写出来，所以每轮都重读。
+// 文件模式：端口和令牌都在会合文件里，读不到说明还没起来。
+func (h *Host) liveEndpoint(app craft.App, base control.Endpoint, rendezvous string) (control.Endpoint, error) {
+	if app.Control == craft.ControlFile {
+		rv, err := readRendezvous(rendezvous)
+		if err != nil {
+			return control.Endpoint{}, err
+		}
+		if rv.Port <= 0 {
+			return control.Endpoint{}, errors.New("会合文件里没有端口")
+		}
+		return control.Endpoint{
+			Network: control.NetworkTCP,
+			Address: fmt.Sprintf("127.0.0.1:%d", rv.Port),
+			Token:   rv.Token,
+		}, nil
+	}
+	ep := base
+	if _, port, err := splitHostPort(base.Address); err == nil {
+		ep.Token = readToken(app, port)
+	}
+	return ep, nil
 }
 
 // candidateEndpoints 给出可以尝试连接的端点，按可信度排序：
-// 注册表里记录的 → 默认端口 → 我们自己的 socket 路径。
+// 注册表里记录的 → 应用默认端口（端口模式）或会合文件（文件模式）。
 func (h *Host) candidateEndpoints(app craft.App) []control.Endpoint {
 	var out []control.Endpoint
 	seen := map[string]bool{}
@@ -427,38 +548,26 @@ func (h *Host) candidateEndpoints(app craft.App) []control.Endpoint {
 			add(e.Endpoint)
 		}
 	}
-	if app.Transport == craft.TCP && app.DefaultPort > 0 {
-		add(control.Endpoint{Network: control.NetworkTCP, Address: fmt.Sprintf("127.0.0.1:%d", app.DefaultPort)})
-	}
-	if app.Transport == craft.Unix || !app.KnownControl() {
-		add(control.Endpoint{Network: control.NetworkUnix, Address: h.socketPath(app.ID)})
+	switch app.Control {
+	case craft.ControlPort:
+		if app.Port > 0 {
+			ep := control.Endpoint{
+				Network: control.NetworkTCP,
+				Address: fmt.Sprintf("127.0.0.1:%d", app.Port),
+			}
+			ep.Token = readToken(app, fmt.Sprint(app.Port))
+			add(ep)
+		}
+	case craft.ControlFile:
+		if rv, err := readRendezvous(h.rendezvousPath(app.ID)); err == nil && rv.Port > 0 {
+			add(control.Endpoint{
+				Network: control.NetworkTCP,
+				Address: fmt.Sprintf("127.0.0.1:%d", rv.Port),
+				Token:   rv.Token,
+			})
+		}
 	}
 	return out
-}
-
-func (h *Host) socketPath(appID string) string {
-	return filepath.Join(h.opts.DataDir, "run", appID+".sock")
-}
-
-// allocateEndpoint 为一个新进程挑端点。
-// TCP 优先用应用默认端口；占用了就顺延到下一个空闲端口。
-func (h *Host) allocateEndpoint(app craft.App) (control.Endpoint, error) {
-	if app.Transport == craft.TCP {
-		start := app.DefaultPort
-		if start <= 0 {
-			start = 7990
-		}
-		for port := start; port < start+40; port++ {
-			if portFree(port) {
-				return control.Endpoint{Network: control.NetworkTCP, Address: fmt.Sprintf("127.0.0.1:%d", port)}, nil
-			}
-		}
-		return control.Endpoint{}, errors.New("找不到空闲端口")
-	}
-	// Unix socket：先清掉上次留下的死文件，否则应用可能绑不上。
-	path := h.socketPath(app.ID)
-	_ = os.Remove(path)
-	return control.Endpoint{Network: control.NetworkUnix, Address: path}, nil
 }
 
 // Stop 断开连接；如果进程是我们拉起的，一并结束。
@@ -546,6 +655,13 @@ func (h *Host) readRegistry() (Registry, error) {
 	if reg.Apps == nil {
 		reg.Apps = map[string]Entry{}
 	}
+	// 端点自己不带令牌（它会被推到界面），令牌存在 Entry 上；用的时候合回去。
+	for id, e := range reg.Apps {
+		if e.Token != "" {
+			e.Endpoint.Token = e.Token
+			reg.Apps[id] = e
+		}
+	}
 	return reg, nil
 }
 
@@ -555,6 +671,10 @@ func (h *Host) writeRegistry(appID string, entry Entry) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	reg, _ := h.readRegistry()
+	// 端点上的令牌要单独存一份：Endpoint 的 JSON 里没有 token 字段。
+	if entry.Token == "" {
+		entry.Token = entry.Endpoint.Token
+	}
 	// 接管别人的实例时不知道 PID，别把已知的进程号抹成 0。
 	if entry.PID == 0 {
 		if old, ok := reg.Apps[appID]; ok {
@@ -567,7 +687,8 @@ func (h *Host) writeRegistry(appID string, entry Entry) {
 		return
 	}
 	tmp := h.registryPath() + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+	// 0600：这份文件现在带着控制令牌。
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
 		return
 	}
 	_ = os.Rename(tmp, h.registryPath())
