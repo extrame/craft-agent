@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -242,9 +243,25 @@ func attach(dmg, mount string) error {
 }
 
 func detach(mount string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	return run(ctx, hdiutil, "detach", mount)
+	var err error
+	// 普通 detach 偶尔会因为 Spotlight 或 Finder 正在看这个卷而失败。失败一次
+	// 就留下一个永久挂着的卷（侧栏里多出一个 FigCraft），所以这里重试，
+	// 最后一轮直接 -force。
+	for i := 0; i < 3; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		args := []string{"detach", mount}
+		if i == 2 {
+			args = []string{"detach", "-force", mount}
+		}
+		err = run(ctx, hdiutil, args...)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		time.Sleep(time.Duration(i+1) * 500 * time.Millisecond)
+	}
+	log.Printf("卸载 %s 失败：%v", mount, err)
+	return err
 }
 
 // teamOf 读现有副本的开发者团队。新副本必须由同一个团队签名 ——
