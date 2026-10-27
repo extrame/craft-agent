@@ -11,6 +11,7 @@ import (
 	_ "embed"
 	"fmt"
 	"runtime"
+	"strconv"
 	"sync"
 	"sync/atomic"
 
@@ -115,8 +116,12 @@ func SetLanguage(language string) {
 	}
 }
 
-// SetOnline 把「几个应用在线」写进 tooltip。窗口收起后，这是唯一还能看见的
-// 进程状态；不变就不更新，免得每 2 秒往主线程推一次无谓的调用。
+// SetOnline 把「几个应用在线」报出去。窗口收起后，这是唯一还看得见的进程状态；
+// 不变就不更新，免得每 2 秒往主线程推一次无谓的调用。
+//
+// 两个平台放的地方不一样，不是审美问题：macOS 的托盘没有 tooltip（Wails 那边
+// 是空实现），只有图标旁边那点标题位置能放字；Windows 反过来，tooltip 有、
+// label 是空实现。
 func SetOnline(n int) {
 	mu.Lock()
 	if n == online {
@@ -125,15 +130,26 @@ func SetOnline(n int) {
 	}
 	online = n
 	target := item
+	w := words[lang]
+	mu.Unlock()
+	if target == nil {
+		return
+	}
+
+	if runtime.GOOS == "darwin" {
+		label := ""
+		if n > 0 {
+			label = strconv.Itoa(n)
+		}
+		target.SetLabel(label)
+		return
+	}
+
 	text := "Craft Agent"
 	if n > 0 {
-		text = "Craft Agent · " + fmt.Sprintf(words[lang].Online, n)
+		text = "Craft Agent · " + fmt.Sprintf(w.Online, n)
 	}
-	mu.Unlock()
-
-	if target != nil {
-		target.SetTooltip(text)
-	}
+	target.SetTooltip(text)
 }
 
 func rebuild() {
