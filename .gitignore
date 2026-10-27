@@ -1,0 +1,18 @@
+.task
+bin
+# 构建产物不入库，但 dist 下的 index.html 例外：main.go 用 go:embed 引用整个目录，
+# 没有它 fresh clone 直接 go build 会失败。那份 index.html 是占位页，
+# 构建前端后会被覆盖 —— 覆盖后的版本不要提交。
+frontend/dist/*
+!frontend/dist/index.html
+frontend/node_modules
+# 生成器/构建工具用的本地临时目录（某些受管环境要求 TMPDIR 落在工作区内）
+.tmpdir
+*.log
+build/linux/appimage/build
+build/windows/nsis/MicrosoftEdgeWebview2Setup.exe
+# Mobile generated (per-machine; overlays hold absolute paths)
+build/ios/xcode/overlay.json
+build/ios/xcode/gen/
+build/android/overlay.json
+build/android/gen/

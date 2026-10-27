@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Craft Agent — front end not built</title>
+  <!--
+    Placeholder, tracked by git so that `go build` works on a fresh clone:
+    main.go embeds this directory. It is replaced by `npm run build` in
+    frontend/. Do not commit the built version of this file.
+  -->
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      margin: 0; min-height: 100vh; display: grid; place-items: center;
+      font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f6f5f3; color: #1c1b19;
+    }
+    main { max-width: 34rem; padding: 2rem; }
+    h1 { font-size: 1.35rem; margin: 0 0 .5rem; letter-spacing: -.01em; }
+    p { margin: .4rem 0; color: #55524d; }
+    code {
+      display: block; margin: .75rem 0; padding: .7rem .9rem; border-radius: 6px;
+      background: #eae7e2; color: #1c1b19; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .small { font-size: 13px; }
+    .small code { display: inline; padding: .1rem .3rem; margin: 0; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #1a1917; color: #f1efec; }
+      p { color: #a8a49e; }
+      code { background: #26241f; color: #f1efec; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>The front end has not been built yet</h1>
+    <p>This window is a placeholder. The interface you are looking for is not in this binary.</p>
+    <code>cd frontend &amp;&amp; npm install &amp;&amp; npm run build</code>
+    <p>then rebuild:</p>
+    <code>go build -o bin/craft-agent .</code>
+    <p class="small">
+      The CLI works as it is:
+      <code>craft-agent apps</code> ·
+      <code>craft-agent mcp</code>
+    </p>
+  </main>
+</body>
+</html>

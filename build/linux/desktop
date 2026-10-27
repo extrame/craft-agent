@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Name=Craft Agent
+Comment=AI co-editing hub for the Craft suite
+# The Exec line includes %u to pass the URL to the application
+Exec=/usr/local/bin/craft-agent %u
+Terminal=false
+Type=Application
+Icon=craft-agent
+Categories=Utility;
+StartupWMClass=craft-agent
+
+ 

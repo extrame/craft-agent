@@ -1,0 +1,15 @@
+{
+	"fixed": {
+		"file_version": "0.1.0"
+	},
+	"info": {
+		"0000": {
+			"ProductVersion": "0.1.0",
+			"CompanyName": "Craft Agent",
+			"FileDescription": "AI co-editing hub for the Craft suite",
+			"LegalCopyright": "© 2026, My Company",
+			"ProductName": "Craft Agent",
+			"Comments": "This is a comment"
+		}
+	}
+}

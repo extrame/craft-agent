@@ -1,0 +1,25 @@
+Craft Agent
+Copyright (c) 2026 extrame and the Craft Agent contributors.
+Licensed under the MIT License or the Apache License, Version 2.0, at your option
+(LICENSE-MIT, LICENSE-APACHE).
+
+This is an independent, unofficial project. It is not published by, endorsed by, or
+affiliated with the teams behind the Craft App Suite. The suite's apps, names and
+brand colours are used only to identify the software this tool talks to; no app icon,
+logo or other brand asset is redistributed here — the interface draws its own letter
+marks from each app's accent colour.
+
+Third-party material
+
+Go modules (see go.mod / go.sum for the full pinned list). The direct ones:
+
+  github.com/wailsapp/wails/v3      MIT
+  github.com/mark3labs/mcp-go       MIT
+
+Inter font (frontend/public/Inter-Medium.ttf) — The Inter Project Authors
+(Rasmus Andersson), SIL Open Font License 1.1. The license text ships as
+frontend/Inter Font License.txt.
+
+The control protocol implemented in internal/control was documented by observing the
+Craft apps' own `--control` endpoint. No code from those apps is included or
+decompiled here.
