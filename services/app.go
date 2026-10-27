@@ -32,7 +32,7 @@ import (
 )
 
 // Version 由 main 注入。
-var Version = "0.1.0"
+var Version = "0.0.2"
 
 // DocumentView 是文档状态摘要，只取界面要显示的部分。
 type DocumentView struct {
@@ -67,6 +67,9 @@ type AppService struct {
 	installMu  sync.Mutex
 	installing map[string]bool
 
+	// watchMu 让锚点轮询同一时刻只跑一轮（见 anchor_watch.go）。
+	watchMu sync.Mutex
+
 	// Emit 把安装进度推给界面；由 main 接上 Wails 事件总线。
 	Emit func(UpdateProgress)
 
@@ -93,6 +96,7 @@ func NewAppService(h *host.Host, j *journal.Journal) *AppService {
 } // ServiceStartup 由 Wails 在应用启动时调用。
 func (s *AppService) ServiceStartup(ctx context.Context) {
 	s.ctx, s.cancel = context.WithCancel(ctx)
+	s.startAnchorWatch()
 }
 
 // ServiceShutdown 在窗口关闭时断开所有通道（应用进程留给用户）。

@@ -22,9 +22,9 @@ declare module "@wailsio/runtime" {
     namespace Events {
         interface CustomEvents {
             "craft:activity": host$0.Event;
-            "craft:journal": journal$0.Entry[];
-            "craft:menus": menu$0.Summary[];
-            "craft:status": host$0.Status[];
+            "craft:journal": journal$0.Entry[] | null;
+            "craft:menus": menu$0.Summary[] | null;
+            "craft:status": host$0.Status[] | null;
             "craft:update": services$0.UpdateProgress;
         }
     }

@@ -1003,17 +1003,20 @@ function renderJournal() {
 
 /* ---------------- 文件锚点 ---------------- */
 
-// 锚点只在选中应用与用户动作时读：它几乎不变，不值得跟着 2 秒快照跑。
-async function loadAnchor(id: string) {
-  anchorBusy = true;
-  renderAnchor();
+// 锚点在选中应用与用户动作时读；此外保存感知（后端轮询 file.info 升级锚点）
+// 会让它每隔几秒变化一次，5 秒轮询里静默对齐一次 —— 不走 busy，避免闪加载态。
+async function loadAnchor(id: string, quiet = false) {
+  if (!quiet) {
+    anchorBusy = true;
+    renderAnchor();
+  }
   try {
     const all = (await AppService.Anchors()) ?? [];
     anchor = all.find((a) => a.app === id) ?? null;
   } catch {
-    anchor = null;
+    if (!quiet) anchor = null;
   }
-  anchorBusy = false;
+  if (!quiet) anchorBusy = false;
   // 请求期间用户可能已切到别的应用，别画到别人的面板里。
   if (selected === id) renderAnchor();
 }
@@ -1353,9 +1356,13 @@ async function boot() {
     .catch(() => {
       /* 打开弹窗时会再试一次并显示失败原因 */
     });
-  // 选中应用的文档每 5 秒对齐一次，保持「看到的就是当下」。
+  // 选中应用的文档每 5 秒对齐一次，保持「看到的就是当下」；锚点一并静默刷新，
+  // 用户在应用里保存文件后几秒内，「文件锚点」面板就会从「未保存」变成文件身份。
   window.setInterval(() => {
-    if (selected) void inspect();
+    if (selected) {
+      void inspect();
+      void loadAnchor(selected, true);
+    }
   }, 5000);
 }
 

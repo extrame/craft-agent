@@ -299,6 +299,12 @@ anchored file back", not "follow the new path", because nothing in the protocol 
 a save-as apart from switching to a different document. Two windows on the same file are
 still indistinguishable.
 
+The channel never announces a save. No generation has a notification or subscription
+mechanism — everything is request/response — so a user-side save is only visible by
+re-reading `file.info` (`dirty` going true→false, `path` going empty→set). Craft Agent's
+window polls anchored, connected apps every few seconds for exactly this; the MCP guard
+performs the same upgrade before its next write.
+
 This layer is DeckCraft's, and not even the whole suite shares it: FigCraft 0.11.2 has no
 `file.info` at all, and PdfCraft's unit is a page in a PDF rather than a slide.
 

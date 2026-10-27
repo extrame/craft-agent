@@ -145,7 +145,10 @@ directory:
   took. The window polls it every two seconds.
 - **`anchors.json`** — the file ↔ document mapping the write guard maintains, per app.
   Both sides re-read it on every access, so the window can show it and let you release
-  an anchor; a release takes effect on a live MCP session immediately.
+  an anchor; a release takes effect on a live MCP session immediately. The control
+  channel has no notifications, so for connected anchored apps the window also polls
+  `file.info` every few seconds and upgrades the anchor the moment you save in the app —
+  journaled like any other action.
 - **`runtime.json`** — each MCP session's on-disk self-report (pid, version, started at).
   The MCP process is spawned by the AI client and shares no memory with this app: after
   an upgrade the binary on disk is new, but a session that is already running keeps
@@ -179,7 +182,7 @@ docs/control-protocol.md    what we measured about the control channel
 
 ## Install
 
-There are no prebuilt downloads for Craft Agent itself yet: this is 0.1.0 and the interface
+There are no prebuilt downloads for Craft Agent itself yet: this is 0.0.2 and the interface
 still moves. Build it from source (next section) and put the binary anywhere on your `PATH`.
 
 **The apps are a different matter — Craft Agent installs those.** Paste the binary on a fresh

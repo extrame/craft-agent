@@ -48,7 +48,7 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
-const version = "0.1.0"
+const version = "0.0.2"
 
 // pageHandler 决定窗口里显示什么。
 //
