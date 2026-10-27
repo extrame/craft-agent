@@ -848,6 +848,7 @@ function bind() {
 
   // 切语言时把静态标注与动态块都刷新（setLang 里已经调过 applyStatic，这里只补重绘）。
   onLangChange(() => {
+    void AppService.SetTrayLanguage(getLang());
     renderApps();
     if (selected) renderDetail();
     renderSessions();
@@ -858,6 +859,8 @@ function bind() {
 
 async function boot() {
   initI18n();
+  // 托盘菜单在系统 chrome 里，跟随不了页面语言，开机时先把当前语言报过去。
+  void AppService.SetTrayLanguage(getLang());
   bind();
   syncLangSwitch();
   try {

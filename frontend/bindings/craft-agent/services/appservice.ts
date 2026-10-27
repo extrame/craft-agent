@@ -145,6 +145,14 @@ export function Sessions(): $CancellablePromise<$models.SessionView[] | null> {
 }
 
 /**
+ * SetTrayLanguage 让托盘菜单跟上界面语言。那份菜单画在系统 chrome 里，
+ * 页面上的 i18n 够不着它，只能由前端把当前语言报过来。
+ */
+export function SetTrayLanguage(lang: string): $CancellablePromise<void> {
+    return $Call.ByID(688488950, lang);
+}
+
+/**
  * Suite 返回套件里每个应用的当前状态，并补齐版本与更新信息。
  * 
  * 版本这部分刻意放在服务层而不是 host：host 只负责进程与通道，查远端是另一件事，

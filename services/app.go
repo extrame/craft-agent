@@ -25,6 +25,7 @@ import (
 	"craft-agent/internal/host"
 	"craft-agent/internal/journal"
 	"craft-agent/internal/release"
+	"craft-agent/internal/tray"
 	"craft-agent/internal/update"
 )
 
@@ -550,6 +551,10 @@ func (s *AppService) OpenDataDir() error { return reveal(s.host.DataDir()) }
 
 // Version 返回版本号。
 func (s *AppService) Version() string { return Version }
+
+// SetTrayLanguage 让托盘菜单跟上界面语言。那份菜单画在系统 chrome 里，
+// 页面上的 i18n 够不着它，只能由前端把当前语言报过来。
+func (s *AppService) SetTrayLanguage(lang string) { tray.SetLanguage(lang) }
 
 /* ---------------- 内部 ---------------- */
 

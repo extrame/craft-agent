@@ -30,6 +30,7 @@ import (
 	"craft-agent/internal/journal"
 	mcpserver "craft-agent/internal/mcp"
 	"craft-agent/internal/release"
+	"craft-agent/internal/tray"
 	"craft-agent/internal/update"
 	"craft-agent/services"
 )
@@ -515,11 +516,12 @@ func runGUI() {
 			Handler: application.AssetFileServerFS(assets),
 		},
 		Mac: application.MacOptions{
-			ApplicationShouldTerminateAfterLastWindowClosed: true,
+			// 关窗只是收起：Craft 应用和流水都还在，退出去下次还得重新发现一遍。
+			ApplicationShouldTerminateAfterLastWindowClosed: false,
 		},
 	})
 
-	app.Window.NewWithOptions(application.WebviewWindowOptions{
+	win := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:     "Craft Agent",
 		Width:     1200,
 		Height:    800,
@@ -536,6 +538,9 @@ func runGUI() {
 		URL:              "/",
 	})
 
+	// 菜单栏 / 通知区域：窗口收起来之后，这是唯一的入口。
+	tray.Install(app, win, "zh", svc.OpenDataDir)
+
 	// 状态与流水每 2 秒推一次：应用是别的进程，界面不能假设自己知道什么时候变了。
 	// 这是「保持更新」的兜底 —— 事件负责即时反馈，轮询负责把漏掉的补齐。
 	go func() {
@@ -546,8 +551,18 @@ func runGUI() {
 			if a == nil {
 				continue
 			}
-			a.Event.Emit(eventStatus, svc.Suite())
+			suite := svc.Suite()
+			a.Event.Emit(eventStatus, suite)
 			a.Event.Emit(eventJournal, svc.Journal(120))
+
+			// 窗口不可见时页面上的数字没人看，托盘 tooltip 是唯一还在报状态的地方。
+			online := 0
+			for _, s := range suite {
+				if s.Connected {
+					online++
+				}
+			}
+			tray.SetOnline(online)
 		}
 	}()
 

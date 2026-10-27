@@ -220,6 +220,11 @@ The interface follows the system language and can be switched in the top-right c
 the choice is stored in `localStorage`. Strings live in `frontend/src/i18n.ts` — no
 dependency, `data-i18n` attributes plus `t(key, vars)` interpolation.
 
+Closing the window only tucks it away: into the menu bar on macOS, into the notification area
+on Windows. The process and the running apps are untouched. Click the icon to bring the window
+back; the menu also carries "Open data folder" and "Quit". To actually quit, use that item or
+`Cmd+Q`.
+
 ## MCP tools
 
 The window's "MCP setup" button prints a snippet you can paste as-is:
