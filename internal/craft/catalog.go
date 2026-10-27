@@ -110,6 +110,13 @@ func home() string {
 //
 // Transport / DefaultPort 只填已经实测过的应用；其余留空表示「尚未确认」，
 // 宿主会在启动后尝试按 --control 探测，探测失败就如实报告不可连，而不是假装支持。
+//
+// 已经确认的一族：它们的 --control 收的是**端口号**，不是 socket 路径
+// （`Usage: figcraft [--control PORT] …`）。给 unix 路径不是「换了种通道」，
+// 是给了一个它不认识的参数，进程照常起来、只是不监听任何地方，于是宿主只能
+// 报「控制通道未就绪」。FigCraft 实测：597 条命令，engine.commands /
+// engine.execute 与 DeckCraft 同协议。其余几个同厂同引擎，按此推定，端口错开
+// 是为了让每个应用重启后回到自己的位置，而不是从 7990 往上抢。
 var Suite = []App{
 	{ID: "photocraft", Name: "PhotoCraft", Tagline: "图像编辑", Repo: "storytold/photocraft", Accent: "#2f7bf5", Fallback: "#1a5bc4", TaglineEN: "Image editing", ControlFlag: "--control"},
 	{ID: "vectorcraft", Name: "VectorCraft", Tagline: "矢量插画", Repo: "storytold/vectorcraft", Accent: "#e8573f", Fallback: "#b83a24", TaglineEN: "Vector illustration", ControlFlag: "--control"},
@@ -118,14 +125,17 @@ var Suite = []App{
 	{ID: "pdfcraft", Name: "PdfCraft", Tagline: "PDF 阅读、整理与保护", Repo: "storytold/pdfcraft", Accent: "#12a58a", Fallback: "#0a7563", Transport: Unix, TaglineEN: "PDF reading, organizing, protecting", ControlFlag: "--control"},
 	{ID: "effectcraft", Name: "EffectCraft", Tagline: "动态图形与特效", Repo: "storytold/effectcraft", Accent: "#e0368f", Fallback: "#b0206c", TaglineEN: "Motion graphics and effects", ControlFlag: "--control"},
 	{ID: "designcraft", Name: "DesignCraft", Tagline: "版式设计与出版", Repo: "storytold/designcraft", Accent: "#7bb51c", Fallback: "#457008", TaglineEN: "Layout and publishing", ControlFlag: "--control"},
-	{ID: "figcraft", Name: "FigCraft", Tagline: "界面设计与原型", Repo: "storytold/figcraft", Accent: "#02da96", Fallback: "#047a56", TaglineEN: "UI design and prototyping", ControlFlag: "--control"},
-	{ID: "wordcraft", Name: "WordCraft", Tagline: "写作与文档排版", Repo: "storytold/wordcraft", Accent: "#3f5fe0", Fallback: "#2a44b8", TaglineEN: "Writing and document layout", ControlFlag: "--control"},
-	{ID: "soundcraft", Name: "SoundCraft", Tagline: "录音、剪辑与混音", Repo: "storytold/soundcraft", Accent: "#1fa5c9", Fallback: "#0e7290", TaglineEN: "Recording, editing, mixing", ControlFlag: "--control"},
-	// DeckCraft：唯一一个完整实测过的应用。--control PORT，JSON lines，
+	// FigCraft：实测过。--control PORT，JSON lines，597 条命令，但**没有 file.info**
+	// —— 命令集是设计工具自己的（node.create / frame.create / shape.*），
+	// 依赖文档级模型的 craft_doc 在这里不成立。
+	{ID: "figcraft", Name: "FigCraft", Tagline: "界面设计与原型", Repo: "storytold/figcraft", Accent: "#02da96", Fallback: "#047a56", Transport: TCP, DefaultPort: 7991, TaglineEN: "UI design and prototyping", ControlFlag: "--control"},
+	{ID: "wordcraft", Name: "WordCraft", Tagline: "写作与文档排版", Repo: "storytold/wordcraft", Accent: "#3f5fe0", Fallback: "#2a44b8", Transport: TCP, DefaultPort: 7992, TaglineEN: "Writing and document layout", ControlFlag: "--control"},
+	{ID: "soundcraft", Name: "SoundCraft", Tagline: "录音、剪辑与混音", Repo: "storytold/soundcraft", Accent: "#1fa5c9", Fallback: "#0e7290", Transport: TCP, DefaultPort: 7993, TaglineEN: "Recording, editing, mixing", ControlFlag: "--control"},
+	// DeckCraft：完整实测过的应用。--control PORT，JSON lines，
 	// 方法见 docs/control-protocol.md（engine.execute / engine.commands / document.inspect…）。
 	{ID: "deckcraft", Name: "DeckCraft", Tagline: "演示文稿与放映", Repo: "storytold/deckcraft", Accent: "#f07a1e", Fallback: "#a84f0a", Transport: TCP, DefaultPort: 7990, TaglineEN: "Presentations and slideshows", ControlFlag: "--control"},
-	{ID: "cadcraft", Name: "CADCraft", Tagline: "计算机辅助设计", Repo: "storytold/cadcraft", Accent: "#3ea6e8", Fallback: "#1a6fa8", TaglineEN: "Computer-aided design", ControlFlag: "--control"},
-	{ID: "gridcraft", Name: "GridCraft", Tagline: "表格与数据", Repo: "storytold/gridcraft", Accent: "#1f9d55", Fallback: "#12703a", TaglineEN: "Spreadsheets and data", ControlFlag: "--control"},
+	{ID: "cadcraft", Name: "CADCraft", Tagline: "计算机辅助设计", Repo: "storytold/cadcraft", Accent: "#3ea6e8", Fallback: "#1a6fa8", Transport: TCP, DefaultPort: 7994, TaglineEN: "Computer-aided design", ControlFlag: "--control"},
+	{ID: "gridcraft", Name: "GridCraft", Tagline: "表格与数据", Repo: "storytold/gridcraft", Accent: "#1f9d55", Fallback: "#12703a", Transport: TCP, DefaultPort: 7995, TaglineEN: "Spreadsheets and data", ControlFlag: "--control"},
 }
 
 // ByID 按 id 取应用。
