@@ -338,7 +338,10 @@ func (b *bridge) handleRun(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 
 	// 文档级命令本身就是「我要换一份文档」的意思：执行后重锚，而不是拦下来。
 	docCommand := command == cmdFileNew || command == cmdWindowNext || command == cmdFileClose
-	if !docCommand && !readOnlyCommand(command) {
+	// 守卫的前提是应用能回答「我在哪一份里」。FigCraft 这类没有 file.info 的应用
+	// 走降级模式：不守卫，但把这件事告诉调用方，由 agent 端的说明顶上。
+	guardDoc := !docCommand && !readOnlyCommand(command) && b.hasDocModel(ctx, app, client)
+	if guardDoc {
 		// 写入前守卫：锚定的文档变了就不发命令，避免安静地写进另一份。
 		if _, err := b.guardDoc(ctx, client); err != nil {
 			b.record(app.ID, "command", command, false, err.Error(), 0)
@@ -362,6 +365,10 @@ func (b *bridge) handleRun(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 	payload := map[string]any{"app": app.ID, "command": command}
 	if docErr == nil {
 		payload["document"] = doc
+	}
+	if !guardDoc && !docCommand && !readOnlyCommand(command) {
+		payload["guard"] = "none"
+		payload["note"] = docGuardNote
 	}
 	if len(raw) > 0 {
 		payload["result"] = json.RawMessage(raw)

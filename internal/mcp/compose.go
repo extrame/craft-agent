@@ -404,9 +404,15 @@ func (b *bridge) handleBatch(ctx context.Context, req mcp.CallToolRequest) (*mcp
 	if len(steps) == 0 {
 		return errResult(fmt.Errorf("steps 为空")), nil
 	}
-	doc, err := b.guardDoc(ctx, c)
-	if err != nil {
-		return errResult(err), nil
+	var doc docIdentity
+	// craft_batch 是通用工具，会用在没有文档层的应用上（FigCraft 没有 file.info）。
+	// 前提不成立时跳过守卫并注明，而不是让批次死在 unknown command 上。
+	docCapable := b.hasDocModel(ctx, app, c)
+	if docCapable {
+		var err error
+		if doc, err = b.guardDoc(ctx, c); err != nil {
+			return errResult(err), nil
+		}
 	}
 	// 批次里有 insert.* 时，「当前页」是隐式的：调用方能钉页就钉住，别让整批落到别的页。
 	if slide := req.GetInt("slide", -1); slide >= 0 {
@@ -472,13 +478,19 @@ func (b *bridge) handleBatch(ctx context.Context, req mcp.CallToolRequest) (*mcp
 
 	payload := map[string]any{
 		"app":       app.ID,
-		"document":  doc,
 		"ok":        failed == 0,
 		"steps":     results,
 		"failed":    failed,
 		"total":     len(steps),
 		"stopped":   stopped,
 		"elapsedMs": time.Since(start).Milliseconds(),
+	}
+	if docCapable {
+		payload["document"] = doc
+	} else {
+		payload["document"] = nil
+		payload["guard"] = "none"
+		payload["note"] = docGuardNote
 	}
 	if len(docCommands) > 0 {
 		payload["documentCommands"] = docCommands

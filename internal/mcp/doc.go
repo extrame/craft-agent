@@ -11,6 +11,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 
 	"craft-agent/internal/control"
+	"craft-agent/internal/craft"
 )
 
 // 这个文件解决「文档层」的隐式状态。
@@ -77,6 +78,29 @@ func (b *bridge) readDoc(ctx context.Context, c *control.Client) (docIdentity, e
 	}
 	return docIdentity{Title: info.Title, Path: info.Path, Slides: info.Slides, Dirty: info.Dirty}, nil
 }
+
+// hasDocModel 报告该应用是否真的提供文档身份。
+//
+// 文档上下文是 agent 端维护的，但「锚点比对」这一半依赖应用能回答「我在哪一份里」，
+// 而 file.info 是唯一来源。FigCraft 0.11.2 没有这条命令（catalog 里有记录）：
+// 前提不成立时守卫就不该执行，硬调只会让每条写入死在
+// unknown command \`file.info\` 上，把写入通道整个堵死。
+//
+// 没有文档模型的应用走降级模式：守卫跳过，结果里如实注明
+// guard=none，调用方自己知道「写入始终作用于当前活动文档」。
+//
+// 命令表拿不到时保守按「有」处理 —— 那时真正的执行也活不成，
+// 报原始错误比静默跳过守卫更接近真相。
+func (b *bridge) hasDocModel(ctx context.Context, app craft.App, c *control.Client) bool {
+	set, ok := b.commandSet(ctx, app, c)
+	if !ok {
+		return true
+	}
+	return set[cmdFileInfo]
+}
+
+const docGuardNote = "该应用不提供文档身份（命令表里没有 file.info），文档守卫不生效：" +
+	"写入始终作用于当前活动文档，切换文档后请先用该应用的 inspect 类命令确认落点。"
 
 // anchorNow 把当前文档记为本次会话的锚点。
 func (b *bridge) anchorNow(doc docIdentity) {
@@ -187,6 +211,11 @@ func (b *bridge) handleDoc(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 	app, c, err := b.openReq(ctx, req)
 	if err != nil {
 		return errResult(err), nil
+	}
+	// craft_doc 的每个 action 都要从 file.info 读身份。应用没有这条命令时
+	// 明确说明文档层对它不成立，而不是让六种 action 各自报 unknown command。
+	if !b.hasDocModel(ctx, app, c) {
+		return errResult(fmt.Errorf("%s 不提供文档身份，craft_doc 对它不适用。%s", app.Name, docGuardNote)), nil
 	}
 	action := strings.ToLower(strings.TrimSpace(req.GetString("action", "info")))
 	start := time.Now()
