@@ -262,6 +262,18 @@ document   implicit, no parameters — can only be switched with window.next
 prefix is the other half of that promise: those three tools refuse to run on any other app,
 rather than fail halfway through a model that does not exist there.
 
+**Raw channel** — the escape hatch:
+
+| Tool | What it does |
+|---|---|
+| `craft_apps` | list the suite with install / online / endpoint state |
+| `craft_open` | attach to an app, launching it if needed |
+| `craft_inspect` | read the active document: pages, shape ids, selection |
+| `craft_run` | execute one command (parameters documented per command); pre-write guard applies |
+| `craft_commands` | search that app's command table |
+| `craft_screenshot` | capture the window to a file, return the path |
+| `craft_close` | detach, and stop what this session started |
+
 ## Why the `deckcraft_*` commands exist
 
 The control channel is complete: it can do everything the app can do. It is not complete in
