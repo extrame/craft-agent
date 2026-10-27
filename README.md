@@ -4,7 +4,7 @@
 GridCraft, PhotoCraft and the rest of the suite behind a single MCP server, and shows you
 what an agent is doing to them while it does it.
 
-<p>
+<p align="center">
   <img alt="Go 1.25" src="https://img.shields.io/badge/Go-1.25-00ADD8?style=flat-square&logo=go&logoColor=white">
   <img alt="Wails v3" src="https://img.shields.io/badge/Wails-v3-DF0000?style=flat-square">
   <img alt="macOS · Windows · Linux" src="https://img.shields.io/badge/macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-26282e?style=flat-square">
@@ -15,6 +15,7 @@ what an agent is doing to them while it does it.
 <p align="center">
   <a href="README.zh-CN.md">中文</a> ·
   <a href="#what-it-is">What it is</a> ·
+  <a href="#install">Install</a> ·
   <a href="#build-from-source">Build</a> ·
   <a href="#mcp-tools">MCP tools</a> ·
   <a href="docs/control-protocol.md">Protocol</a>
@@ -134,6 +135,14 @@ services/app.go             Wails bindings (state, actions, log, updates, MCP co
 frontend/                   Vite + TypeScript, no framework; i18n in src/i18n.ts
 docs/control-protocol.md    what we measured about the control channel
 ```
+
+## Install
+
+There are no prebuilt downloads yet: this is 0.1.0 and the interface still moves. Build it
+from source (next section) and put the binary anywhere on your `PATH`.
+
+One thing is required, and it is not installed for you: at least one Craft app. Craft Agent
+drives them; it does not install or uninstall them.
 
 ## Build from source
 

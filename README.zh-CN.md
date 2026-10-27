@@ -3,7 +3,7 @@
 **Craft 套件的 MCP 中枢** —— 一个二进制，把 DeckCraft、WordCraft、GridCraft、PhotoCraft
 等整个套件收进一个 MCP 服务器，同时让你看见 AI 正在对它们做什么。
 
-<p>
+<p align="center">
   <img alt="Go 1.25" src="https://img.shields.io/badge/Go-1.25-00ADD8?style=flat-square&logo=go&logoColor=white">
   <img alt="Wails v3" src="https://img.shields.io/badge/Wails-v3-DF0000?style=flat-square">
   <img alt="macOS · Windows · Linux" src="https://img.shields.io/badge/macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-26282e?style=flat-square">
@@ -14,6 +14,7 @@
 <p align="center">
   <a href="README.md">English</a> ·
   <a href="#它是什么">它是什么</a> ·
+  <a href="#安装">安装</a> ·
   <a href="#从源码构建">构建</a> ·
   <a href="#mcp-工具">MCP 工具</a> ·
   <a href="docs/control-protocol.md">协议文档</a>
@@ -126,6 +127,14 @@ services/app.go            Wails 绑定（状态、动作、流水、更新、MC
 frontend/                  Vite + TypeScript，无框架；i18n 在 src/i18n.ts
 docs/control-protocol.md   控制通道的实测记录
 ```
+
+## 安装
+
+还没有预编译包：版本还是 0.1.0，接口每天都在动。请从源码构建（下一节），把二进制放到
+`PATH` 里的任意位置即可。
+
+有一件事它不会替你做：装好至少一个 Craft 应用。Craft Agent 只负责驱动它们，
+不负责首次安装或卸载。
 
 ## 从源码构建
 
