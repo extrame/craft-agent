@@ -380,7 +380,7 @@ The order is fixed, and any failure stops where it happened:
 | Step | What happens | On failure |
 |---|---|---|
 | Pick asset | exact `app-version-platform-arch.ext`, then suffix match; excludes `-cli-`, `-web-`, `SHA256SUMS`, `.zsync` | "no installer for this platform" |
-| Download | streamed to `.part`, hashing as it goes | checksum mismatch deletes the download |
+| Download | streamed to `.part`; a dropped connection resumes with `Range`, backing off 1s→30s; hashed when complete | gives up only after eight attempts in a row make no progress (the `.part` stays); a checksum mismatch alone triggers a fresh start |
 | Checksum source | the asset's `digest`, else `SHA256SUMS.txt` from the same release; neither → **refuse to install** | says the checksum is missing, does not proceed |
 | URL allowlist | must be `https://github.com/<that app's repo>/releases/download/…`, redirects only to GitHub hosts | suspicious entries are dropped from the candidates |
 | Mount | `hdiutil attach -nobrowse -readonly -noverify` into a scratch directory | retries four times; diskimages-helper accepts one image at a time |
@@ -400,6 +400,14 @@ The order is fixed, and any failure stops where it happened:
 - Repository renames are followed from the feed's `repo_renames` (same owner only): GitHub
   redirects a renamed repo, but **the redirected download URL belongs to the new repo**, so
   validating against the old name would reject every asset.
+- Outbound traffic picks a proxy in this order: environment variables, then the system
+  setting (macOS `scutil --proxy`, Windows Internet Settings in the registry), then direct.
+  A GUI app launched from Finder or the Start menu does not inherit the shell's
+  environment, so `HTTPS_PROXY` alone is worth nothing there — the user runs a system
+  proxy, we connect directly to GitHub, and that is why large downloads crawl and break.
+- Three clocks guard a download: 20s to connect, 60s to response headers, 5 minutes per
+  attempt, plus a 45s stall detector on the body. All of them cut the attempt and resume
+  rather than leaving the window saying "downloading" while nothing moves.
 
 ## Known limits
 

@@ -20,21 +20,25 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"craft-agent/internal/craft"
+	"craft-agent/internal/proxy"
 )
 
 const (
-	githubAPI    = "https://api.github.com"
-	githubHost   = "github.com"
+	githubAPI  = "https://api.github.com"
+	githubHost = "github.com"
 	// 单个资产的上限。套件里最大的安装包 90MB 上下，2GB 已经足够宽裕，
 	// 但不该对「资产大小」这类远端字段毫无上限。
 	maxAssetSize = 2 << 30
@@ -84,19 +88,59 @@ type Result struct {
 type Client struct {
 	http  *http.Client
 	agent string
+	// route 是出网走的那条路的一句话说明，出问题时要能一眼看出走没走代理。
+	route string
+
+	// 下载节奏。测试里会改小，正常情况用包级常量。
+	attemptLimit time.Duration
+	stallLimit   time.Duration
+	// retryBase 是第一次重试前等多久，之后翻倍。
+	retryBase time.Duration
 
 	mu  sync.Mutex
 	rel map[string]Release
 }
+
+// 下载的三个时间约束。
+//
+// 它们的分工：dial/header 管「连不上」，stall 管「连上了但不动」，attempt 管
+// 「一直在动但慢得没边」。三种都不该让用户干等，而应该断开、续传、再来。
+const (
+	dialTimeout   = 20 * time.Second
+	headerTimeout = 60 * time.Second
+	attemptLimit  = 5 * time.Minute
+	stallLimit    = 45 * time.Second
+	// 连续这么多次「本次尝试一个字节都没多」才放弃。中间只要有一次下了点东西就重置。
+	maxStalls = 8
+)
 
 // NewClient 构造客户端。agent 作为 User-Agent —— GitHub 会拒绝没有 UA 的请求。
 func NewClient(agent string) *Client {
 	if agent == "" {
 		agent = "Craft-Agent"
 	}
+	// 代理在这里定一次：环境变量 → 系统设置 → 直连。图形程序从 Finder 启动时
+	// 拿不到 shell 的环境变量，所以系统设置那一步不是可有可无的补充。
+	route, note := proxy.Pick()
+	log.Printf("出网：%s", note)
+
+	transport := &http.Transport{
+		Proxy: route,
+		DialContext: (&net.Dialer{
+			Timeout:   dialTimeout,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   dialTimeout,
+		ResponseHeaderTimeout: headerTimeout,
+		ExpectContinueTimeout: time.Second,
+		IdleConnTimeout:       90 * time.Second,
+		ForceAttemptHTTP2:     true,
+	}
+
 	return &Client{
 		http: &http.Client{
-			Timeout: 0, // 大文件下载不能用整体超时，靠 ctx 控制
+			Timeout:   0, // 大文件下载不能用整体超时，靠 ctx 与单次尝试上限控制
+			Transport: transport,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 10 {
 					return errors.New("重定向次数过多")
@@ -110,10 +154,17 @@ func NewClient(agent string) *Client {
 				return fmt.Errorf("下载被重定向到非 GitHub 域名：%s", host)
 			},
 		},
-		agent: agent,
-		rel:   map[string]Release{},
+		agent:        agent,
+		route:        note,
+		attemptLimit: attemptLimit,
+		stallLimit:   stallLimit,
+		retryBase:    time.Second,
+		rel:          map[string]Release{},
 	}
 }
+
+// Route 说明这个客户端出网走哪条路（代理地址或「直连」）。
+func (c *Client) Route() string { return c.route }
 
 // Release 取某个应用某个 tag 的发布。tag 为空表示 latest。
 func (c *Client) Release(ctx context.Context, repo, tag string) (Release, error) {
@@ -318,7 +369,13 @@ func (c *Client) EnsureSum(ctx context.Context, repo string, rel Release, a Asse
 	return a, fmt.Errorf("校验和文件里没有 %s 的条目", a.Name)
 }
 
-// Download 把资产下到 dest，边下边算 SHA-256，下完对不上就删掉。
+// Download 把资产下到 dest。
+//
+// 网络差的时候，能不能「接着上次继续」比「下得多快」重要得多：GitHub 的资产分发
+// 在国内经常几十秒就断一次，一次成功的假设并不成立。所以这里按 craft-launcher
+// 的做法来 —— 断开就把已下的字节留在 .part 里，下一次请求带上 Range 从断点续，
+// 连着几次没有进展才放弃；只有校验不通过时才认输，且会从零重来一次
+// （续传的字节可能被中间层拼错）。
 func (c *Client) Download(ctx context.Context, a Asset, dest string, onProgress func(bytes, total int64)) error {
 	if a.SHA256 == "" {
 		return errors.New("缺少校验和，拒绝下载")
@@ -330,75 +387,297 @@ func (c *Client) Download(ctx context.Context, a Asset, dest string, onProgress 
 		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.URL, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("User-Agent", c.agent)
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("下载失败：HTTP %d", resp.StatusCode)
+	// 上一轮已经下完并校验过：不再花一次流量。安装包按版本命名，同名就是同一份。
+	if ok, err := fileMatches(dest, a); err == nil && ok {
+		if onProgress != nil {
+			onProgress(a.Size, a.Size)
+		}
+		return nil
 	}
 
-	total := resp.ContentLength
-	if total <= 0 {
-		total = a.Size
+	err := c.fetch(ctx, a, dest, onProgress, false)
+	if errors.Is(err, errChecksum) {
+		// 断点续传有可能接错位置，而校验和是唯一能发现它的东西：从头再来一次。
+		log.Printf("%s 校验不符，清掉重下一次", a.Name)
+		err = c.fetch(ctx, a, dest, onProgress, true)
 	}
+	return err
+}
+
+// errChecksum 表示字节都拿到了，但和发布的 SHA-256 对不上。
+var errChecksum = errors.New("校验和不符")
+
+// fatalError 包住「重试也没用」的错误：磁盘写不进去、内容超过上限之类。
+type fatalError struct{ err error }
+
+func (e *fatalError) Error() string { return e.err.Error() }
+func (e *fatalError) Unwrap() error { return e.err }
+
+func fatal(err error) error { return &fatalError{err: err} }
+
+// fetch 反复尝试直到 .part 的长度等于发布声明的大小，然后校验并改名。
+// fresh 为 true 时先丢掉已有的 .part。
+func (c *Client) fetch(ctx context.Context, a Asset, dest string, onProgress func(bytes, total int64), fresh bool) error {
 	part := dest + ".part"
-	f, err := os.Create(part)
+	if fresh {
+		os.Remove(part)
+	}
+	stalls := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		have := fileSize(part)
+		if a.Size > 0 && have > a.Size {
+			// 比声明的还大：这份 .part 不属于现在这个版本，丢掉重来。
+			os.Remove(part)
+			have = 0
+		}
+		if a.Size > 0 && have == a.Size {
+			break
+		}
+
+		done, err := c.attempt(ctx, a, part, have, onProgress)
+		if err == nil {
+			break
+		}
+		if ctx.Err() != nil {
+			// 用户取消：.part 留着，下次接着下。
+			return ctx.Err()
+		}
+		var fatalErr *fatalError
+		if errors.As(err, &fatalErr) {
+			return fatalErr.err
+		}
+		if done > have {
+			stalls = 1
+		} else {
+			stalls++
+		}
+		if stalls > maxStalls {
+			return fmt.Errorf("连续 %d 次没有进展，已下载 %d 字节（保留在 %s，可重试）：%w", maxStalls, have, part, err)
+		}
+		wait := c.waitFor(stalls)
+		log.Printf("%s 下载中断（%v），%s 后从 %d 字节继续", a.Name, err, wait, have)
+		if err := sleep(ctx, wait); err != nil {
+			return err
+		}
+	}
+
+	got, err := hashFile(part)
 	if err != nil {
 		return err
 	}
-	hasher := sha256.New()
+	if !strings.EqualFold(got, a.SHA256) {
+		os.Remove(part)
+		return fmt.Errorf("%w：下到 %s…，发布声明 %s…", errChecksum, got[:12], a.SHA256[:12])
+	}
+	if err := os.Rename(part, dest); err != nil {
+		os.Remove(part)
+		return err
+	}
+	if onProgress != nil {
+		size := fileSize(dest)
+		onProgress(size, size)
+	}
+	return nil
+}
+
+// attempt 发一次请求，把从 have 开始的内容追加到 part。
+//
+// 返回的 done 是这次结束时 part 的长度 —— 调用方靠它判断「有没有进展」。
+// 单次尝试有总时长上限，连接卡住则由 idle 计时器掐断，两种都算可续传的失败。
+func (c *Client) attempt(ctx context.Context, a Asset, part string, have int64, onProgress func(bytes, total int64)) (int64, error) {
+	attemptCtx, cancel := context.WithTimeout(ctx, c.attemptLimit)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(attemptCtx, http.MethodGet, a.URL, nil)
+	if err != nil {
+		return have, fatal(err)
+	}
+	req.Header.Set("User-Agent", c.agent)
+	// 安装包本来就是压缩过的，别让中间的代理再压一遍。
+	req.Header.Set("Accept-Encoding", "identity")
+	if have > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", have))
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return have, err
+	}
+	defer resp.Body.Close()
+
+	var start int64
+	switch resp.StatusCode {
+	case http.StatusPartialContent:
+		start, err = contentRangeStart(resp.Header.Get("Content-Range"))
+		if err != nil {
+			return have, err
+		}
+		if start != have {
+			// 从别的位置开始追加会把文件拼坏，宁可这次不要。
+			return have, fmt.Errorf("服务器从第 %d 字节开始给，请求的是 %d", start, have)
+		}
+	case http.StatusOK:
+		// 服务器不认 Range（或本来就没带）：从零开始，之前的 .part 作废。
+		start = 0
+	case http.StatusRequestedRangeNotSatisfiable:
+		if have > 0 {
+			// 要的范围已经越过末尾：长度够了，交给校验去判断对错。
+			return have, nil
+		}
+		return have, fmt.Errorf("下载失败：HTTP %d", resp.StatusCode)
+	default:
+		return have, fmt.Errorf("下载失败：HTTP %d", resp.StatusCode)
+	}
+
+	flags := os.O_CREATE | os.O_WRONLY
+	if start > 0 {
+		flags |= os.O_APPEND
+	} else {
+		flags |= os.O_TRUNC
+	}
+	f, err := os.OpenFile(part, flags, 0o644)
+	if err != nil {
+		return have, fatal(err)
+	}
+	defer f.Close()
+
+	total := a.Size
+	if total <= 0 {
+		total = resp.ContentLength
+	}
+
+	// 卡住的判断：这么久没有新字节，就掐掉这次请求回去续传 —— Go 的 http 没有
+	// 读超时，不加这个，连接僵住就会一直挂着，看上去像「在下载」，其实一个字节都不动。
+	idle := time.AfterFunc(c.stallLimit, cancel)
+	defer idle.Stop()
+
 	buf := make([]byte, 256<<10)
-	var written int64
+	written := start
 	for {
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
+			idle.Reset(c.stallLimit)
 			if written+int64(n) > maxAssetSize {
-				f.Close()
-				os.Remove(part)
-				return errors.New("下载内容超过大小上限，已中止")
+				return written, fatal(errors.New("下载内容超过大小上限，已中止"))
 			}
 			if _, err := f.Write(buf[:n]); err != nil {
-				f.Close()
-				os.Remove(part)
-				return err
+				return written, fatal(err)
 			}
-			hasher.Write(buf[:n])
 			written += int64(n)
 			if onProgress != nil {
 				onProgress(written, total)
 			}
 		}
 		if readErr != nil {
-			if errors.Is(readErr, io.EOF) {
-				break
+			switch {
+			case errors.Is(readErr, io.EOF):
+				if a.Size > 0 && written != a.Size {
+					return written, fmt.Errorf("收到 %d 字节，发布声明 %d", written, a.Size)
+				}
+				return written, nil
+			case ctx.Err() != nil:
+				return written, ctx.Err()
+			case attemptCtx.Err() != nil:
+				return written, fmt.Errorf("这次连接停在 %d 字节（%v）", written, attemptCtx.Err())
+			default:
+				return written, readErr
 			}
-			f.Close()
-			os.Remove(part)
-			return readErr
 		}
 	}
-	if err := f.Close(); err != nil {
-		os.Remove(part)
-		return err
-	}
+}
 
-	got := hex.EncodeToString(hasher.Sum(nil))
-	if !strings.EqualFold(got, a.SHA256) {
-		os.Remove(part)
-		return fmt.Errorf("校验和不符：下载到 %s…，发布声明 %s…", got[:12], a.SHA256[:12])
+// contentRangeStart 读 "bytes 1000-1999/2000" 里的 1000。
+func contentRangeStart(header string) (int64, error) {
+	header = strings.TrimSpace(header)
+	if !strings.HasPrefix(header, "bytes ") {
+		return 0, fmt.Errorf("分段响应缺少 Content-Range：%q", header)
 	}
-	if err := os.Rename(part, dest); err != nil {
-		os.Remove(part)
-		return err
+	rest := strings.TrimPrefix(header, "bytes ")
+	first, _, ok := strings.Cut(rest, "-")
+	if !ok {
+		return 0, fmt.Errorf("Content-Range 读不懂：%q", header)
 	}
-	return nil
+	start, err := strconv.ParseInt(strings.TrimSpace(first), 10, 64)
+	if err != nil || start < 0 {
+		return 0, fmt.Errorf("Content-Range 读不懂：%q", header)
+	}
+	return start, nil
+}
+
+// fileSize 返回文件长度，不存在或读不了算 0。
+func fileSize(path string) int64 {
+	st, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return st.Size()
+}
+
+// fileMatches 判断 path 上那份文件是不是这个资产：先比大小，再比哈希。
+func fileMatches(path string, a Asset) (bool, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if a.Size > 0 && st.Size() != a.Size {
+		return false, nil
+	}
+	got, err := hashFile(path)
+	if err != nil {
+		return false, err
+	}
+	return strings.EqualFold(got, a.SHA256), nil
+}
+
+// hashFile 算整个文件的 SHA-256。
+func hashFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// waitFor 是第 n 次「没有进展」之后等多久：1s、2s、4s…… 最多 30s。
+func (c *Client) waitFor(stalls int) time.Duration {
+	base := c.retryBase
+	if base <= 0 {
+		base = time.Second
+	}
+	if stalls < 1 {
+		stalls = 1
+	}
+	if stalls > 5 {
+		stalls = 5
+	}
+	d := base << uint(stalls-1)
+	if d > 30*time.Second {
+		d = 30 * time.Second
+	}
+	return d
+}
+
+// sleep 等一段时间，期间可以被打断。
+func sleep(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 func (c *Client) get(ctx context.Context, target, accept string) ([]byte, int, error) {

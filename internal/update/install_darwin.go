@@ -54,12 +54,11 @@ func Install(ctx context.Context, c *Client, o Options) (Result, error) {
 	destDir, destBundle := destination(o, existingBundle)
 
 	// 1. 下载
+	//
+	// 同名文件不删：Download 会先比大小和 SHA-256，已经下好直接跳过，
+	// 下了一半的就从断点续 —— 一百多兆的包，重来一次要几分钟。
 	file := filepath.Join(o.WorkDir, o.Asset.Name)
 	stage(o.OnStage, Stage{Step: "download", Percent: 0, Total: o.Asset.Size})
-	if _, err := os.Stat(file); err == nil {
-		// 上一次下载留下的同名文件不直接信：重新下会覆盖，校验也在下载里做。
-		_ = os.Remove(file)
-	}
 	err := c.Download(ctx, o.Asset, file, func(done, total int64) {
 		pct := -1
 		if total > 0 {

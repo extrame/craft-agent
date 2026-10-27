@@ -358,7 +358,7 @@ WordCraft、GridCraft 可能根本没有 `text.selectAll`；PdfCraft 的「页�
 | 步骤 | 做法 | 失败时 |
 |---|---|---|
 | 挑资产 | 先按 `应用-版本-平台-架构.ext` 精确匹配，退化为按后缀挑，排除 `-cli-` / `-web-` / `SHA256SUMS` / `.zsync` | 报「没有适用于本平台的安装包」 |
-| 下载 | 流式写 `.part`，边写边算 SHA-256 | 校验和不符就删掉下载 |
+| 下载 | 流式写 `.part`；断了带 `Range` 从断点续，1s→30s 退避重试；下完算 SHA-256 | 连续 8 次没有进展才放弃（`.part` 保留）；只有校验不符才清掉从零重来 |
 | 校验和来源 | GitHub 资产的 `digest`；没有就取同一发布的 `SHA256SUMS.txt`；两处都没有 → **拒绝安装** | 明确说缺校验和，不静默放行 |
 | 地址白名单 | 必须是 `https://github.com/<该应用仓库>/releases/download/…`，重定向只许落 GitHub 域名 | 可疑条目直接丢弃，不进候选 |
 | 挂载 | `hdiutil attach -nobrowse -readonly -noverify` 到本次专用的空目录 | 重试 4 轮（diskimages-helper 一次只接一个镜像） |
@@ -374,6 +374,12 @@ WordCraft、GridCraft 可能根本没有 `text.selectAll`；PdfCraft 的「页�
   校验与换包给不确定态动画 —— 不知道长度的阶段不假装有百分比。
 - 仓库改名跟随 feed 的 `repo_renames`（只在本账号内跟）：GitHub 会为重定向改名，
   但**重定向后的下载地址属于新仓库**，用旧仓库名校验会把所有资产判成非法。
+- 出网代理按「环境变量 → 系统设置 → 直连」的顺序挑：macOS 读 `scutil --proxy`，
+  Windows 读注册表里的 Internet Settings。图形程序从 Finder / 开始菜单启动时
+  继承不到 shell 的环境变量，只靠 `HTTPS_PROXY` 等于没有 —— 用户开着系统代理，
+  我们却直连 GitHub，这是国内下载慢和断的主因。
+- 下载有三道时间闸：连不上 20 秒、响应头 60 秒、单次尝试 5 分钟；另外 45 秒没有
+  新字节就判定卡住。三种情况都断开续传，不会让界面停在「正在下载」却一动不动。
 
 ## 已知边界
 

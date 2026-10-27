@@ -301,12 +301,17 @@ func (s *AppService) Install(id string) (InstallResult, error) {
 	start := time.Now()
 	res := InstallResult{AppID: id, Fresh: !app.Installed()}
 	fail := func(err error) (InstallResult, error) {
+		// 带上出网方式：下载慢、连不上时，第一件要排除的就是「有没有走代理」。
+		note := err.Error()
+		if route := s.upd.Route(); route != "" {
+			note += "（出网：" + route + "）"
+		}
 		s.journal.Append(journal.Entry{
 			At: time.Now(), Source: "gui", Session: "gui", Kind: "update",
-			AppID: id, Command: "install", OK: false, Detail: err.Error(),
+			AppID: id, Command: "install", OK: false, Detail: note,
 			Duration: time.Since(start).Milliseconds(),
 		})
-		s.emit(UpdateProgress{AppID: id, Step: "error", Percent: -1, Note: err.Error()})
+		s.emit(UpdateProgress{AppID: id, Step: "error", Percent: -1, Note: note})
 		return res, err
 	}
 
