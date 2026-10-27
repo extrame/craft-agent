@@ -104,49 +104,40 @@ func classify(anchor, cur docIdentity) relation {
 	return relMoved
 }
 
-// anchorStore 是 bridge 里的锚点仓库：内存为准，落盘做跨会话恢复。
-// 全部方法要求调用方持有 bridge.docMu。
+// anchorStore 是 bridge 里的锚点仓库。磁盘是唯一事实：每次访问都重读
+// anchors.json —— 文件很小，而这样窗口进程对锚点的管理（解除、查看）
+// 对还活着的 MCP 会话立即生效，不会出现「界面删了、会话内存里又写回去」。
 type anchorStore struct {
 	dataDir string
-	file    anchorsFile
-	loaded  bool
 }
 
-func (s *anchorStore) ensureLoaded() {
-	if s.loaded {
-		return
-	}
-	s.file = loadAnchors(s.dataDir)
-	s.loaded = true
-}
-
-// get 返回某应用的锚点；优先内存（本会话声明过），否则读盘（上个会话留下的）。
+// get 返回某应用的锚点，直接读盘。
 func (s *anchorStore) get(app string) (docIdentity, bool) {
-	s.ensureLoaded()
-	if d, ok := s.file[app]; ok {
+	f := loadAnchors(s.dataDir)
+	if d, ok := f[app]; ok {
 		return d.docIdentity, true
 	}
 	return docIdentity{}, false
 }
 
-// put 记住并落盘。revoked=false 时时间是现在。
+// put 记住并落盘：读-改-写，别覆盖别的应用刚写的锚点。
 func (s *anchorStore) put(app string, doc docIdentity) {
-	s.ensureLoaded()
-	if s.file == nil {
-		s.file = anchorsFile{}
+	f := loadAnchors(s.dataDir)
+	if f == nil {
+		f = anchorsFile{}
 	}
-	s.file[app] = anchorDoc{docIdentity: doc, AnchoredAt: time.Now()}
-	s.file.save(s.dataDir)
+	f[app] = anchorDoc{docIdentity: doc, AnchoredAt: time.Now()}
+	f.save(s.dataDir)
 }
 
-// drop 解除并落盘。
+// drop 解除并落盘（读-改-写）。
 func (s *anchorStore) drop(app string) {
-	s.ensureLoaded()
-	if _, ok := s.file[app]; !ok {
+	f := loadAnchors(s.dataDir)
+	if _, ok := f[app]; !ok {
 		return
 	}
-	delete(s.file, app)
-	s.file.save(s.dataDir)
+	delete(f, app)
+	f.save(s.dataDir)
 }
 
 // reopenDoc 凭路径把锚点文件重新打开，返回打开后的身份。

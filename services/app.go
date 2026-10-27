@@ -261,6 +261,126 @@ func (s *AppService) menuNeedsRefresh(app craft.App) bool {
 	return true
 }
 
+/* ---------------- 文件锚点 ---------------- */
+
+// AnchorView 是界面上可见的一份锚点：agent 端维护的「文件 ↔ 文档身份」对应关系。
+// Saved=false 表示还停在 title 指纹阶段（文档没保存过，丢了就是丢了）；
+// Saved=true 表示已升级为文件身份，应用重启也能凭 path 找回。
+type AnchorView struct {
+	App        string `json:"app"`
+	AppName    string `json:"appName"`
+	Title      string `json:"title"`
+	Path       string `json:"path"`
+	AnchoredAt string `json:"anchoredAt"`
+	Saved      bool   `json:"saved"`
+	FileExists bool   `json:"fileExists"`
+}
+
+// anchorFileShape 是 anchors.json 的读取口径，与 internal/mcp 的写入口径一致。
+// 刻意在本包重述一遍而不是导出 mcpserver 的类型：绑定生成器只认本包的形状。
+type anchorFileShape struct {
+	Title      string    `json:"title"`
+	Path       string    `json:"path"`
+	AnchoredAt time.Time `json:"anchoredAt"`
+}
+
+// Anchors 返回所有落盘的锚点，套件顺序在前、其余（已卸载应用的遗留）在后。
+// 文件不存在、损坏都当「没有」——锚点是意图，不是事实。
+func (s *AppService) Anchors() []AnchorView {
+	raw, err := os.ReadFile(filepath.Join(s.host.DataDir(), "anchors.json"))
+	if err != nil {
+		return nil
+	}
+	var file map[string]anchorFileShape
+	if err := json.Unmarshal(raw, &file); err != nil {
+		return nil
+	}
+	known := map[string]bool{}
+	out := make([]AnchorView, 0, len(file))
+	for _, app := range craft.Suite {
+		if d, ok := file[app.ID]; ok {
+			out = append(out, s.anchorView(app.ID, d))
+			known[app.ID] = true
+		}
+	}
+	ids := make([]string, 0, len(file))
+	for id := range file {
+		if !known[id] {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		out = append(out, s.anchorView(id, file[id]))
+	}
+	return out
+}
+
+func (s *AppService) anchorView(id string, d anchorFileShape) AnchorView {
+	v := AnchorView{
+		App:        id,
+		AppName:    id,
+		Title:      d.Title,
+		Path:       d.Path,
+		Saved:      d.Path != "",
+		AnchoredAt: d.AnchoredAt.Format("2006-01-02 15:04"),
+		FileExists: d.Path != "",
+	}
+	if app, ok := craft.ByID(id); ok {
+		v.AppName = app.Name
+	}
+	if d.Path != "" {
+		if _, err := os.Stat(d.Path); err != nil {
+			v.FileExists = false
+		}
+	}
+	return v
+}
+
+// ReleaseAnchor 解除一个应用的锚点。这是管理动作：锚点错了（比如用户自己在
+// 应用里换了文档、或文件已删除）时，与其等下一次写入被守卫找回/拒绝，不如
+// 让用户直接清掉——下次 AI 写入会就地重新锚定当前文档。
+//
+// 读-改-写：MCP 会话那边每次访问也重读磁盘，所以这里的解除对活着的会话立即生效。
+// 幂等：锚点本来就不在（文件没了、键不在）就直接成功。
+func (s *AppService) ReleaseAnchor(id string) error {
+	path := filepath.Join(s.host.DataDir(), "anchors.json")
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("读锚点文件失败: %w", err)
+	}
+	var file map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &file); err != nil {
+		return fmt.Errorf("锚点文件损坏: %w", err)
+	}
+	if _, ok := file[id]; !ok {
+		return nil
+	}
+	delete(file, id)
+	if len(file) == 0 {
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+	} else {
+		out, err := json.MarshalIndent(file, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(path, out, 0o600); err != nil {
+			return err
+		}
+	}
+	s.journal.Append(journal.Entry{
+		At: time.Now(), Source: "gui", Session: "gui", Kind: "anchor",
+		AppID: id, Command: "release", OK: true,
+		Detail: "用户在界面解除了文件锚点",
+	})
+	return nil
+}
+
 /* ---------------- 动作 ---------------- */
 
 // Connect 接管一个已经在运行的实例，不启动新进程。

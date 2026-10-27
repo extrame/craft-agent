@@ -7,6 +7,7 @@ export {
 };
 
 export type {
+    AnchorView,
     DocumentView,
     InstallResult,
     SessionView,

@@ -119,6 +119,9 @@ directory:
   endpoint if the file has nothing.
 - **`sessions.jsonl`** — who connected, what was called, whether it worked, how long it
   took. The window polls it every two seconds.
+- **`anchors.json`** — the file ↔ document mapping the write guard maintains, per app.
+  Both sides re-read it on every access, so the window can show it and let you release
+  an anchor; a release takes effect on a live MCP session immediately.
 
 ## Layout
 
@@ -220,6 +223,7 @@ Windows `%APPDATA%\CraftAgent\`, Linux `~/.local/share/craft-agent/`:
 ```
 registry.json     endpoints, PIDs and control tokens of running apps
 sessions.jsonl    activity log
+anchors.json      file ↔ document anchors, one per app (0600)
 menus/            one preloaded menu tree per app, keyed by app version
 shots/            screenshots taken through craft_screenshot
 run/              rendezvous files for apps that pick their own port
@@ -454,7 +458,8 @@ The order is fixed, and any failure stops where it happened:
   file by path with `file.open` before writing. Save-as is the one case it will not guess
   through: the guard brings the anchored file back instead of following the new path —
   re-anchor with `craft_doc anchor` if the new file is what you want. Two windows on the
-  same file still cannot be told apart.
+  same file still cannot be told apart. The anchor is visible — and releasable — in the
+  window's file-anchor panel; a release makes the next write re-anchor in place.
 - `craft_doc list` really does switch through every window and back, so the screen flickers
   and it should not be polled while someone is working.
 - The anchor is a single target per session: to touch two documents you must alternate with

@@ -7,7 +7,13 @@ import type {
   Node as MenuNode,
   Summary as MenuSummary,
 } from "../bindings/craft-agent/internal/menu/models";
-import type { DocumentView, InstallResult, UpdateProgress, UpdateState } from "../bindings/craft-agent/services/models";
+import type {
+  AnchorView,
+  DocumentView,
+  InstallResult,
+  UpdateProgress,
+  UpdateState,
+} from "../bindings/craft-agent/services/models";
 import { getLang, initI18n, locale, onLangChange, setLang, t, type Lang } from "./i18n";
 
 // 流水条目的形状与 internal/journal.Entry 的 JSON 标签一一对应。
@@ -49,6 +55,8 @@ const els = {
   btnUpdates: $("#btn-updates") as HTMLButtonElement,
   sessions: $("#sessions") as HTMLUListElement,
   sessionNote: $("#session-note") as HTMLSpanElement,
+  anchorBody: $("#anchor-body") as HTMLDivElement,
+  btnAnchorRefresh: $("#btn-anchor-refresh") as HTMLButtonElement,
   journal: $("#journal") as HTMLUListElement,
   filter: $("#journal-filter") as HTMLDivElement,
   langSwitch: $("#lang-switch") as HTMLDivElement,
@@ -85,6 +93,10 @@ let menuQuery = "";
 let menuOpen = new Set<string>();
 let menuBusy = false;
 let menuLoadToken = 0;
+// 锚点：undefined=还没读过，null=这个应用当前没有锚点。
+// 只在选中应用与用户动作时读，不跟着 2 秒快照跑——它几乎不变。
+let anchor: AnchorView | null | undefined = undefined;
+let anchorBusy = false;
 
 /* ---------------- 工具 ---------------- */
 
@@ -223,6 +235,10 @@ function selectApp(id: string) {
   els.menuSearch.value = "";
   renderMenu();
   void loadMenu(id);
+  // 锚点跟着应用走：先画加载态，读完再补。
+  anchor = undefined;
+  renderAnchor();
+  void loadAnchor(id);
   void inspect();
 }
 
@@ -981,6 +997,98 @@ function renderJournal() {
   }
 }
 
+/* ---------------- 文件锚点 ---------------- */
+
+// 锚点只在选中应用与用户动作时读：它几乎不变，不值得跟着 2 秒快照跑。
+async function loadAnchor(id: string) {
+  anchorBusy = true;
+  renderAnchor();
+  try {
+    const all = (await AppService.Anchors()) ?? [];
+    anchor = all.find((a) => a.app === id) ?? null;
+  } catch {
+    anchor = null;
+  }
+  anchorBusy = false;
+  // 请求期间用户可能已切到别的应用，别画到别人的面板里。
+  if (selected === id) renderAnchor();
+}
+
+async function releaseAnchor() {
+  if (!selected || !anchor) return;
+  const id = selected;
+  anchorBusy = true;
+  renderAnchor();
+  try {
+    await AppService.ReleaseAnchor(id);
+    anchor = null;
+    toast(t("anchor.released"));
+  } catch (err) {
+    toast(t("anchor.releaseFail", { msg: errText(err) }), true);
+  }
+  anchorBusy = false;
+  renderAnchor();
+}
+
+function anchorRow(label: string, value: string, mono = false): HTMLDivElement {
+  const row = document.createElement("div");
+  row.className = "anchor-row";
+  const l = document.createElement("span");
+  l.className = "anchor-label";
+  l.textContent = label;
+  const v = document.createElement("span");
+  v.className = mono ? "anchor-value is-mono" : "anchor-value";
+  v.textContent = value;
+  v.title = value;
+  row.append(l, v);
+  return row;
+}
+
+function renderAnchor() {
+  const body = els.anchorBody;
+  body.replaceChildren();
+  if (!selected || anchor === undefined || anchorBusy) {
+    // 首次读取或正在解除时都是加载态：动作很快，不值得做局部禁用。
+    body.append(hintLine(t("anchor.loading")));
+    return;
+  }
+  if (!anchor) {
+    body.append(hintLine(t("anchor.none")));
+    return;
+  }
+  const a = anchor;
+  const box = document.createElement("div");
+  box.className = "anchor-doc";
+
+  const head = document.createElement("div");
+  head.className = "anchor-head";
+  const badge = document.createElement("span");
+  badge.className = "menu-badge" + (a.saved ? " is-live" : "");
+  badge.textContent = a.saved ? t("anchor.saved") : t("anchor.unsaved");
+  const when = document.createElement("span");
+  when.className = "anchor-when";
+  when.textContent = `${t("anchor.anchoredAt")} ${a.anchoredAt}`;
+  head.append(badge, when);
+  box.append(head);
+
+  box.append(anchorRow(t("anchor.title"), a.title));
+  if (a.saved) {
+    box.append(anchorRow(t("anchor.path"), a.path, true));
+    const exist = document.createElement("p");
+    exist.className = "anchor-exist" + (a.fileExists ? "" : " is-warn");
+    exist.textContent = a.fileExists ? t("anchor.fileExists") : t("anchor.fileMissing");
+    box.append(exist);
+  }
+  box.append(hintLine(t("anchor.hint")));
+
+  const rel = document.createElement("button");
+  rel.className = "btn mini";
+  rel.textContent = t("anchor.release");
+  rel.addEventListener("click", () => void releaseAnchor());
+  box.append(rel);
+  body.append(box);
+}
+
 function labelOf(e: JournalEntry): string {
   switch (e.kind) {
     case "session-start":
@@ -998,6 +1106,8 @@ function labelOf(e: JournalEntry): string {
       return e.command === "install" ? t("journal.install") : t("journal.update");
     case "menu":
       return t("journal.menu");
+    case "anchor":
+      return t("journal.anchor");
     case "command":
       return e.command || t("journal.command");
     default:
@@ -1050,6 +1160,7 @@ function switchLang(lang: Lang) {
   renderSessions();
   renderJournal();
   renderMenu();
+  renderAnchor();
   renderUpdateState();
   if (!els.modal.hidden && !mcpConfig) {
     els.mcpCode.textContent = t("modal.reading");
@@ -1061,6 +1172,9 @@ function switchLang(lang: Lang) {
 function bind() {
   els.btnInspect.addEventListener("click", () => void inspect());
   els.btnMenuRefresh.addEventListener("click", () => void refreshMenu());
+  els.btnAnchorRefresh.addEventListener("click", () => {
+    if (selected) void loadAnchor(selected);
+  });
   els.menuSearch.addEventListener("input", () => {
     menuQuery = els.menuSearch.value;
     renderMenu();

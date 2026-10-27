@@ -25,6 +25,14 @@ import * as menu$0 from "../internal/menu/models.js";
 import * as $models from "./models.js";
 
 /**
+ * Anchors 返回所有落盘的锚点，套件顺序在前、其余（已卸载应用的遗留）在后。
+ * 文件不存在、损坏都当「没有」——锚点是意图，不是事实。
+ */
+export function Anchors(): $CancellablePromise<$models.AnchorView[] | null> {
+    return $Call.ByID(1428944194);
+}
+
+/**
  * CanAutoInstall 表示本平台能不能代用户完成安装。
  */
 export function CanAutoInstall(): $CancellablePromise<boolean> {
@@ -158,6 +166,18 @@ export function PreloadMenus(): $CancellablePromise<menu$0.Summary[] | null> {
  */
 export function RefreshMenu(id: string): $CancellablePromise<menu$0.Menu> {
     return $Call.ByID(3645402656, id);
+}
+
+/**
+ * ReleaseAnchor 解除一个应用的锚点。这是管理动作：锚点错了（比如用户自己在
+ * 应用里换了文档、或文件已删除）时，与其等下一次写入被守卫找回/拒绝，不如
+ * 让用户直接清掉——下次 AI 写入会就地重新锚定当前文档。
+ * 
+ * 读-改-写：MCP 会话那边每次访问也重读磁盘，所以这里的解除对活着的会话立即生效。
+ * 幂等：锚点本来就不在（文件没了、键不在）就直接成功。
+ */
+export function ReleaseAnchor(id: string): $CancellablePromise<void> {
+    return $Call.ByID(966859384, id);
 }
 
 /**
