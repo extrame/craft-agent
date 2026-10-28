@@ -300,12 +300,16 @@ indistinguishable.
 
 The channel never announces a save. No generation has a notification or subscription
 mechanism — everything is request/response — so a user-side save is only visible by
-re-reading `file.info` (`dirty` going true→false, `path` going empty→set). Craft Agent's
-window polls anchored, connected apps every few seconds for exactly this; the MCP guard
-performs the same upgrade before its next write.
+re-reading the identity source (`dirty` going true→false, `path` going empty→set). Craft
+Agent's window polls anchored, connected apps every few seconds for exactly this; the MCP
+guard performs the same upgrade before its next write.
 
-This layer is DeckCraft's, and not even the whole suite shares it: FigCraft 0.11.2 has no
-`file.info` at all, and PdfCraft's unit is a page in a PDF rather than a slide.
+This layer is not uniform across the suite. FigCraft 0.11.2 has **no `file.info`** — its
+identity source is `doc.list`, which returns every open document at once
+(`{index, name, path, dirty, active}`), more than `file.info` offers: a full list with an
+active flag, in one command, no window switching. Craft Agent uses it both for identity
+(the `active` entry) and for `craft_doc list`. PdfCraft's unit is a page in a PDF rather
+than a slide.
 
 ## Page and selection state
 

@@ -202,7 +202,7 @@ func (b *bridge) handlePage(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 		return errResult(err), nil
 	}
 	// 加/删页会改变页数：身份里的 slides 要用操作之后的值，否则调用方看到的是旧快照。
-	if fresh, err := b.readDoc(ctx, c); err == nil {
+	if fresh, err := b.readDoc(ctx, app, c); err == nil {
 		doc = fresh
 	}
 	b.record(app.ID, "command", "deckcraft_page:"+note, true, "", time.Since(start))
@@ -498,7 +498,7 @@ func (b *bridge) handleBatch(ctx context.Context, req mcp.CallToolRequest) (*mcp
 	}
 	if len(docCommands) > 0 && docCapable {
 		payload["documentCommands"] = docCommands
-		after, docErr := b.readDoc(ctx, c)
+		after, docErr := b.readDoc(ctx, app, c)
 		if docErr == nil {
 			if !after.same(doc) {
 				payload["documentChanged"] = after
@@ -513,7 +513,7 @@ func (b *bridge) handleBatch(ctx context.Context, req mcp.CallToolRequest) (*mcp
 			payload["deck"] = outline
 		}
 		// verify 的语义是「跑完给我一个可信的状态」，所以身份也重新读一次。
-		if fresh, err := b.readDoc(ctx, c); err == nil {
+		if fresh, err := b.readDoc(ctx, app, c); err == nil {
 			payload["document"] = fresh
 		}
 	}

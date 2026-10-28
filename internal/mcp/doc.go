@@ -35,6 +35,17 @@ const (
 	cmdFileOpen   = "file.open"
 	cmdFileClose  = "file.close"
 	cmdWindowNext = "window.next"
+	cmdDocList    = "doc.list"
+)
+
+// 文档身份来源。DeckCraft 这代用 file.info（只报当前文档）；
+// FigCraft 0.11.2 没有 file.info，但 doc.list 直接返回全部打开文档
+// （name/path/dirty/active），信息反而更全 —— 实测（2026-10-28）：
+//   [{"active":true,"dirty":true,"index":0,"name":"新版网站设计",
+//     "path":"/Users/…/新版网站设计.figcraft"}]
+const (
+	srcFileInfo = "file.info"
+	srcDocList  = "doc.list"
 )
 
 // maxDocs 是枚举窗口的上限。超过这个数量的文档没人会指望 agent 去管。
@@ -62,8 +73,16 @@ func (d docIdentity) String() string {
 	return fmt.Sprintf("%s（未保存）", d.Title)
 }
 
-// readDoc 读活动文档的身份。file.info 是唯一能拿到标题与路径的命令。
-func (b *bridge) readDoc(ctx context.Context, c *control.Client) (docIdentity, error) {
+// readDoc 读活动文档的身份，按应用的身份来源分派。
+func (b *bridge) readDoc(ctx context.Context, app craft.App, c *control.Client) (docIdentity, error) {
+	if b.identitySource(ctx, app, c) == srcDocList {
+		return b.readDocViaDocList(ctx, c)
+	}
+	return b.readDocViaFileInfo(ctx, c)
+}
+
+// readDocViaFileInfo 是 file.info 来源：只报当前文档。
+func (b *bridge) readDocViaFileInfo(ctx context.Context, c *control.Client) (docIdentity, error) {
 	raw, err := c.Execute(ctx, cmdFileInfo, nil)
 	if err != nil {
 		return docIdentity{}, err
@@ -80,27 +99,82 @@ func (b *bridge) readDoc(ctx context.Context, c *control.Client) (docIdentity, e
 	return docIdentity{Title: info.Title, Path: info.Path, Slides: info.Slides, Dirty: info.Dirty}, nil
 }
 
-// hasDocModel 报告该应用是否真的提供文档身份。
-//
-// 文档上下文是 agent 端维护的，但「锚点比对」这一半依赖应用能回答「我在哪一份里」，
-// 而 file.info 是唯一来源。FigCraft 0.11.2 没有这条命令（catalog 里有记录）：
-// 前提不成立时守卫就不该执行，硬调只会让每条写入死在
-// unknown command \`file.info\` 上，把写入通道整个堵死。
-//
-// 没有文档模型的应用走降级模式：守卫跳过，结果里如实注明
-// guard=none，调用方自己知道「写入始终作用于当前活动文档」。
-//
-// 命令表拿不到时保守按「有」处理 —— 那时真正的执行也活不成，
-// 报原始错误比静默跳过守卫更接近真相。
-func (b *bridge) hasDocModel(ctx context.Context, app craft.App, c *control.Client) bool {
-	set, ok := b.commandSet(ctx, app, c)
-	if !ok {
-		return true
-	}
-	return set[cmdFileInfo]
+// docListEntry 是 doc.list 返回的一项（FigCraft 0.11.2 实测形状）。
+type docListEntry struct {
+	Index  int    `json:"index"`
+	Name   string `json:"name"`
+	Path   string `json:"path"`
+	Dirty  bool   `json:"dirty"`
+	Active bool   `json:"active"`
 }
 
-const docGuardNote = "该应用不提供文档身份（命令表里没有 file.info），文档守卫不生效：" +
+// parseDocList 把 doc.list 的返回压成 (全部条目, 活动项)。
+// 空列表返回错误；没有 active 标记时取第一项 —— 列表为空才说明没有文档。
+func parseDocList(raw json.RawMessage) ([]docListEntry, docListEntry, error) {
+	var entries []docListEntry
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		// 有的实现把数组包在对象里，做一次兼容。
+		var wrapped struct {
+			Documents []docListEntry `json:"documents"`
+		}
+		if err2 := json.Unmarshal(raw, &wrapped); err2 != nil || wrapped.Documents == nil {
+			return nil, docListEntry{}, fmt.Errorf("doc.list 返回无法解析: %w", err)
+		}
+		entries = wrapped.Documents
+	}
+	if len(entries) == 0 {
+		return nil, docListEntry{}, fmt.Errorf("doc.list 返回空列表：没有打开的文档")
+	}
+	active := entries[0]
+	for _, e := range entries {
+		if e.Active {
+			active = e
+			break
+		}
+	}
+	return entries, active, nil
+}
+
+// readDocViaDocList 是 doc.list 来源：取 active 项（或第一项）当活动文档。
+func (b *bridge) readDocViaDocList(ctx context.Context, c *control.Client) (docIdentity, error) {
+	raw, err := c.Execute(ctx, cmdDocList, nil)
+	if err != nil {
+		return docIdentity{}, err
+	}
+	_, active, err := parseDocList(raw)
+	if err != nil {
+		return docIdentity{}, err
+	}
+	return docIdentity{Title: active.Name, Path: active.Path, Dirty: active.Dirty}, nil
+}
+
+// hasDocModel 报告该应用是否真的提供文档身份。
+//
+// 文档上下文是 agent 端维护的，但「锚点比对」这一半依赖应用能回答「我在哪一份里」。
+// 来源有两条：file.info（DeckCraft 这代）、doc.list（FigCraft 0.11.2）。
+// 两条都没有的应用走降级模式：守卫跳过，结果里如实注明 guard=none。
+func (b *bridge) hasDocModel(ctx context.Context, app craft.App, c *control.Client) bool {
+	return b.identitySource(ctx, app, c) != ""
+}
+
+// identitySource 报告该应用用哪条命令读「当前文档身份」。
+// 命令表拿不到时保守按 file.info 处理 —— 那时真正的执行也活不成，
+// 报原始错误比静默跳过守卫更接近真相。
+func (b *bridge) identitySource(ctx context.Context, app craft.App, c *control.Client) string {
+	set, ok := b.commandSet(ctx, app, c)
+	if !ok {
+		return srcFileInfo
+	}
+	if set[cmdFileInfo] {
+		return srcFileInfo
+	}
+	if set[cmdDocList] {
+		return srcDocList
+	}
+	return ""
+}
+
+const docGuardNote = "该应用既没有 file.info 也没有 doc.list，文档身份不成立，文档守卫不生效：" +
 	"写入始终作用于当前活动文档，切换文档后请先用该应用的 inspect 类命令确认落点。"
 
 // anchorNow 把当前文档记为该应用的锚点（内存 + 落盘，见 anchor.go）。
@@ -126,10 +200,16 @@ type docEntry struct {
 
 // listDocs 枚举所有打开的文档。
 //
-// 只能靠 window.next {index} 逐个切过去读 file.info：越界索引是静默 no-op，
-// 所以「连续两次读到同一份身份」就是枚举结束。结束时切回原来的文档。
-func (b *bridge) listDocs(ctx context.Context, c *control.Client) ([]docEntry, int, error) {
-	start, err := b.readDoc(ctx, c)
+// doc.list 来源（FigCraft）：一条命令直接给全量，无需切换。
+// file.info 来源（DeckCraft）：只能靠 window.next {index} 逐个切过去读 file.info：
+// 越界索引是静默 no-op，所以「连续两次读到同一份身份」就是枚举结束。
+// 结束时切回原来的文档。
+func (b *bridge) listDocs(ctx context.Context, app craft.App, c *control.Client) ([]docEntry, int, error) {
+	if b.identitySource(ctx, app, c) == srcDocList {
+		return b.listDocsViaDocList(ctx, c)
+	}
+
+	start, err := b.readDocViaFileInfo(ctx, c)
 	if err != nil {
 		return nil, -1, err
 	}
@@ -141,7 +221,7 @@ func (b *bridge) listDocs(ctx context.Context, c *control.Client) ([]docEntry, i
 		if _, err := c.Execute(ctx, cmdWindowNext, map[string]any{"index": i}); err != nil {
 			break
 		}
-		cur, err := b.readDoc(ctx, c)
+		cur, err := b.readDocViaFileInfo(ctx, c)
 		if err != nil {
 			break
 		}
@@ -164,6 +244,35 @@ func (b *bridge) listDocs(ctx context.Context, c *control.Client) ([]docEntry, i
 		entries[i].Active = entries[i].Index == startIndex
 	}
 	return entries, startIndex, nil
+}
+
+// listDocsViaDocList 是 doc.list 来源的枚举：一条命令，零切换。
+func (b *bridge) listDocsViaDocList(ctx context.Context, c *control.Client) ([]docEntry, int, error) {
+	raw, err := c.Execute(ctx, cmdDocList, nil)
+	if err != nil {
+		return nil, -1, err
+	}
+	entries, _, err := parseDocList(raw)
+	if err != nil {
+		return nil, -1, err
+	}
+	out := make([]docEntry, 0, len(entries))
+	current := -1
+	for _, e := range entries {
+		out = append(out, docEntry{
+			Index:       e.Index,
+			docIdentity: docIdentity{Title: e.Name, Path: e.Path, Dirty: e.Dirty},
+			Active:      e.Active,
+		})
+		if e.Active {
+			current = e.Index
+		}
+	}
+	if current < 0 {
+		// 没有 active 标记时与 readDocViaDocList 同口径：第一项视为当前。
+		current = entries[0].Index
+	}
+	return out, current, nil
 }
 
 func (b *bridge) registerDocTools(s *server.MCPServer) {
@@ -194,7 +303,7 @@ func (b *bridge) handleDoc(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 
 	switch action {
 	case "info":
-		cur, err := b.readDoc(ctx, c)
+		cur, err := b.readDoc(ctx, app, c)
 		if err != nil {
 			return errResult(err), nil
 		}
@@ -210,7 +319,7 @@ func (b *bridge) handleDoc(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 		return mcp.NewToolResultJSON(out)
 
 	case "list":
-		entries, current, err := b.listDocs(ctx, c)
+		entries, current, err := b.listDocs(ctx, app, c)
 		if err != nil {
 			return errResult(err), nil
 		}
@@ -235,7 +344,7 @@ func (b *bridge) handleDoc(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 		if _, err := c.Execute(ctx, cmdWindowNext, map[string]any{"index": index}); err != nil {
 			return errResult(fmt.Errorf("切换到文档 %d 失败: %w", index, err)), nil
 		}
-		cur, err := b.readDoc(ctx, c)
+		cur, err := b.readDoc(ctx, app, c)
 		if err != nil {
 			return errResult(err), nil
 		}
@@ -265,7 +374,7 @@ func (b *bridge) handleDoc(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 			return errResult(err), nil
 		}
 		created := intField(raw, "document")
-		cur, err := b.readDoc(ctx, c)
+		cur, err := b.readDoc(ctx, app, c)
 		if err != nil {
 			return errResult(err), nil
 		}
@@ -279,14 +388,14 @@ func (b *bridge) handleDoc(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 		})
 
 	case "close":
-		cur, err := b.readDoc(ctx, c)
+		cur, err := b.readDoc(ctx, app, c)
 		if err != nil {
 			return errResult(err), nil
 		}
 		if _, err := b.exec(ctx, c, cmdFileClose, nil); err != nil {
 			return errResult(err), nil
 		}
-		after, _ := b.readDoc(ctx, c)
+		after, _ := b.readDoc(ctx, app, c)
 		b.anchorNow(app, after)
 		b.record(app.ID, "command", "craft_doc:close", true, cur.String(), time.Since(start))
 		return mcp.NewToolResultJSON(map[string]any{
@@ -297,7 +406,7 @@ func (b *bridge) handleDoc(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 		})
 
 	case "anchor":
-		cur, err := b.readDoc(ctx, c)
+		cur, err := b.readDoc(ctx, app, c)
 		if err != nil {
 			return errResult(err), nil
 		}

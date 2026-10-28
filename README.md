@@ -147,8 +147,9 @@ directory:
   Both sides re-read it on every access, so the window can show it and let you release
   an anchor; a release takes effect on a live MCP session immediately. The control
   channel has no notifications, so for connected anchored apps the window also polls
-  `file.info` every few seconds and upgrades the anchor the moment you save in the app —
-  journaled like any other action.
+  the app's identity source — `file.info`, or `doc.list` where that's missing (FigCraft) —
+  every few seconds and upgrades the anchor the moment you save in the app, journaled
+  like any other action.
 - **`runtime.json`** — each MCP session's on-disk self-report (pid, version, started at).
   The MCP process is spawned by the AI client and shares no memory with this app: after
   an upgrade the binary on disk is new, but a session that is already running keeps
@@ -376,7 +377,8 @@ The measurements behind each row, all on DeckCraft 0.11.1:
 
 4. **The document layer has no parameters.** After you manually create or switch a document,
    an agent's next `insert` writes into *a different document*, silently.
-   → Every write anchors on the active document (a `title + path` fingerprint from `file.info`)
+   → Every write anchors on the active document (a `title + path` fingerprint from the
+   app's identity source — `file.info`, or `doc.list` where that's missing)
    and compares before writing; when the active document has changed — whether you switched
    or the agent opened another file — **the anchor follows it** and the move is reported in
    `guardNotes`. Document-level commands (`file.new`, `file.open`, `window.next`, `file.close`)

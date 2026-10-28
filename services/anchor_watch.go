@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"craft-agent/internal/control"
@@ -72,7 +73,7 @@ func (s *AppService) watchAnchorsOnce() {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
-		info, err := readFileInfo(ctx, client)
+		info, err := readIdentity(ctx, a.App, client)
 		cancel()
 		if err != nil {
 			continue // 没开文档、没有 file.info、应用正忙：都当「这次没看到」
@@ -91,11 +92,45 @@ func (s *AppService) watchAnchorsOnce() {
 }
 
 // fileInfo 是 file.info 的返回口径，与 internal/mcp 的 docIdentity 一致。
+// doc.list 来源（FigCraft 这代）也压成这个形状：name→title。
 type fileInfo struct {
 	Title  string `json:"title"`
 	Path   string `json:"path"`
 	Slides int    `json:"slides"`
 	Dirty  bool   `json:"dirty"`
+}
+
+// idSources 记住每个应用的身份来源，只在轮询 goroutine
+// 里读写（watchMu 串行化），不需要锁。
+const (
+	srcFileInfo = "file.info"
+	srcDocList  = "doc.list"
+)
+
+var idSources = map[string]string{}
+
+// readIdentity 读当前文档身份，按应用分派来源。
+// DeckCraft 这代有 file.info（只报当前文档）；FigCraft 0.11.2 没有，
+// 但 doc.list 返回全部打开文档（name/path/dirty/active），取 active 项。
+// 先按记住的来源读；没有记录时先试 file.info，报 unknown command 就改试
+// doc.list 并把成功的那个记住 —— 每轮只探测一次，不会反复双发。
+func readIdentity(ctx context.Context, app string, client *control.Client) (fileInfo, error) {
+	if idSources[app] == srcDocList {
+		return readDocListIdentity(ctx, client)
+	}
+	info, err := readFileInfo(ctx, client)
+	if err == nil {
+		return info, nil
+	}
+	if !strings.Contains(err.Error(), "unknown command") {
+		return fileInfo{}, err
+	}
+	info2, err2 := readDocListIdentity(ctx, client)
+	if err2 == nil {
+		idSources[app] = srcDocList
+		return info2, nil
+	}
+	return fileInfo{}, err
 }
 
 func readFileInfo(ctx context.Context, client *control.Client) (fileInfo, error) {
@@ -108,6 +143,34 @@ func readFileInfo(ctx context.Context, client *control.Client) (fileInfo, error)
 		return fileInfo{}, fmt.Errorf("file.info 返回无法解析: %w", err)
 	}
 	return info, nil
+}
+
+// readDocListIdentity 从 doc.list 取活动文档的身份。
+func readDocListIdentity(ctx context.Context, client *control.Client) (fileInfo, error) {
+	raw, err := client.Execute(ctx, "doc.list", nil)
+	if err != nil {
+		return fileInfo{}, err
+	}
+	var entries []struct {
+		Name   string `json:"name"`
+		Path   string `json:"path"`
+		Dirty  bool   `json:"dirty"`
+		Active bool   `json:"active"`
+	}
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return fileInfo{}, fmt.Errorf("doc.list 返回无法解析: %w", err)
+	}
+	if len(entries) == 0 {
+		return fileInfo{}, fmt.Errorf("doc.list 返回空列表：没有打开的文档")
+	}
+	active := entries[0]
+	for _, e := range entries {
+		if e.Active {
+			active = e
+			break
+		}
+	}
+	return fileInfo{Title: active.Name, Path: active.Path, Dirty: active.Dirty}, nil
 }
 
 // saveTransition 判断这次观察是不是「用户保存了」。

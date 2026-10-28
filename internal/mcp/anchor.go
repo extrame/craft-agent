@@ -154,7 +154,7 @@ func (b *bridge) reopenDoc(ctx context.Context, app craft.App, c *control.Client
 	if _, err := c.Execute(ctx, cmdFileOpen, map[string]any{"path": path}); err != nil {
 		return docIdentity{}, err
 	}
-	return b.readDoc(ctx, c)
+	return b.readDoc(ctx, app, c)
 }
 
 // guardDoc 是所有写入路径的前置条件：确认还在锚定的那份文档上，不在就锚到当前这份。
@@ -178,7 +178,7 @@ func (b *bridge) guardDoc(ctx context.Context, app craft.App, c *control.Client)
 
 	anchored, hasAnchor := b.anchors.get(app.ID)
 
-	cur, err := b.readDoc(ctx, c)
+	cur, err := b.readDoc(ctx, app, c)
 	if err != nil {
 		// 读身份失败。有文件身份可凭就先恢复；没有的话这个错误就是真相。
 		if !hasAnchor || anchored.Path == "" {

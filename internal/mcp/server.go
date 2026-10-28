@@ -326,7 +326,7 @@ func (b *bridge) handleInspect(ctx context.Context, req mcp.CallToolRequest) (*m
 	}
 	// 结构本身不带文档身份：控制通道没有 document 参数，只有 file.info 知道我在哪一份里。
 	// 这里把它并进结果，调用方才不会把另一份文档的内容当成这一份。
-	if doc, err := b.readDoc(ctx, client); err == nil {
+	if doc, err := b.readDoc(ctx, app, client); err == nil {
 		out["document"] = doc
 		if anchored, ok := b.anchorValue(app); ok {
 			out["anchored"] = anchored
@@ -382,7 +382,7 @@ func (b *bridge) handleRun(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 	}
 	b.record(app.ID, "command", command, true, summarize(params), elapsed)
 
-	doc, docErr := b.readDoc(ctx, client)
+	doc, docErr := b.readDoc(ctx, app, client)
 	if docErr == nil && docCommand {
 		b.anchorNow(app, doc)
 	}
