@@ -354,8 +354,9 @@ document（隐式，无参数，只能靠 window.next 切）
 4. **文档层没有任何参数，只能靠 `window.next {index}` 切**。用户手动新建/切换文档后，
    agent 的下一条 `insert` 会安静地写进**另一份文档**，不报错、不提示。
    → 每个写工具第一次调用时锚定活动文档（`file.info` 的 title+path 作指纹），之后每次写入前
-   比对；不一致就**拒绝发送命令**并说明怎么切回来。文档级命令（`file.new` / `window.next` /
-   `file.close`）视为显式意图，执行后自动重锚。
+   比对；当前文档变了 —— 不管是你切的还是 agent 打开了别的文件 —— **锚点就跟着走**，
+   并在 `guardNotes` 里说明。文档级命令（`file.new` / `file.open` / `window.next` /
+   `file.close`）视为显式意图，执行后立即重锚。
 
 5. **`insert.*` 没有页参数**，只跟当前页。`slide.new` 本身会切页，但
    `design.background {index}` 这类命令会顺手把活动页切回去，后面的 insert 就全落到别的页上。
@@ -448,10 +449,10 @@ WordCraft、GridCraft 可能根本没有 `text.selectAll`；PdfCraft 的「页�
 - 封装层不做「写前快照」：`craft_batch` 中途失败会停，但已执行的那些步仍然生效，
   需要回退得靠用户的撤销，或后续加 `document.inspect` 快照 + 重建。
 - **文档身份在保存前是 `title + path`，保存后升级为 `path`**，因为通道不发布文档 id。
-  锚点是 agent 自己维护的，落盘在 `<dataDir>/anchors.json`：保存后锚点升级为文件路径，
-  应用重启（或窗口切走）后守卫会凭路径用 `file.open` 把原文件开回来再写 ——
-  「继续操作原文件」不依赖软件还开着。另存为是它**不会替你猜**的唯一情形：
-  守卫把锚定文件找回来，而不是跟着新路径走；要改新文件就 `craft_doc anchor` 重锚。
+  锚点是 agent 自己维护的，落盘在 `<dataDir>/anchors.json`。**锚点跟随当前活动文档**：
+  不管切换来自人还是 AI（`file.open` / `file.new` / 另存为），只要新文档的身份读得到，
+  锚点就跟过去，写工具会在 `guardNotes` 里说明 —— **界面上打开的是哪份，AI 操作的就是哪份**。
+  只有活动文档完全读不到（应用重启）时，守卫才凭路径用 `file.open` 把锚定文件开回来再写。
   锚点在窗口的「文件锚点」面板里可见、可解除；解除后下一次写入就地重新锚定。
   同一文件开两个窗口仍然无法区分。
 - `craft_doc list` 是**真的逐个切窗口再切回**，界面上会看到一次闪动；

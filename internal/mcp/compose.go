@@ -426,7 +426,7 @@ func (b *bridge) handleBatch(ctx context.Context, req mcp.CallToolRequest) (*mcp
 	docCommands := make([]map[string]any, 0, 2)
 	for i, step := range steps {
 		switch strings.TrimSpace(step.Command) {
-		case cmdFileNew, cmdFileClose, cmdWindowNext, "file.open", "file.adopt", "file.revert":
+		case cmdFileNew, cmdFileOpen, cmdFileClose, cmdWindowNext, "file.adopt", "file.revert":
 			docCommands = append(docCommands, map[string]any{"index": i, "command": step.Command})
 		}
 	}

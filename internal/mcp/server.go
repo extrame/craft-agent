@@ -352,13 +352,17 @@ func (b *bridge) handleRun(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 	params := req.GetArguments()["params"]
 
 	// 文档级命令本身就是「我要换一份文档」的意思：执行后重锚，而不是拦下来。
-	docCommand := command == cmdFileNew || command == cmdWindowNext || command == cmdFileClose
+	// file.open 也在其中 —— 不管是 AI 发的还是人点的，打开就是显式意图：
+	// 执行前不做守卫找回（否则守卫会把旧文件抢回来顶掉刚打开的这份），
+	// 执行成功后锚点跟随新文档（见 guardDoc：读得到身份就跟随）。
+	docCommand := command == cmdFileNew || command == cmdFileOpen || command == cmdWindowNext || command == cmdFileClose
 	// 守卫的前提是应用能回答「我在哪一份里」。FigCraft 这类没有 file.info 的应用
 	// 走降级模式：不守卫，但把这件事告诉调用方，由 agent 端的说明顶上。
 	guardDoc := !docCommand && !readOnlyCommand(command) && b.hasDocModel(ctx, app, client)
 	var guardNotes []string
 	if guardDoc {
-		// 写入前守卫：锚定的文档变了先找回（见 anchor.go），找不回才拒绝。
+		// 写入前守卫：锚点跟随当前活动文档（见 anchor.go）；
+		// 只有活动文档读不到（应用重启）时才凭锚点路径找回。
 		if _, guardNotes, err = b.guardDoc(ctx, app, client); err != nil {
 			b.record(app.ID, "command", command, false, err.Error(), 0)
 			return errResult(err), nil

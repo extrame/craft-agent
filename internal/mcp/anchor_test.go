@@ -40,16 +40,16 @@ func TestClassify(t *testing.T) {
 			want:   relSaved,
 		},
 		{
-			name:   "路径变了（另存为 / 重启丢了 / 切走），一律走找回",
+			name:   "路径变了（另存为 / 切走 / 打开别的文件）：锚点跟随当前文档",
 			anchor: docIdentity{Title: "a", Path: "/tmp/a.deck"},
 			cur:    docIdentity{Title: "b", Path: "/tmp/b.deck"},
-			want:   relMoved,
+			want:   relSwitched,
 		},
 		{
-			name:   "文件被关掉、开了个未保存的新文档",
+			name:   "文件被关掉、开了个未保存的新文档：跟随",
 			anchor: docIdentity{Title: "a", Path: "/tmp/a.deck"},
 			cur:    docIdentity{Title: "未命名-1"},
-			want:   relMoved,
+			want:   relSwitched,
 		},
 		{
 			name:   "未保存文档之间切换",

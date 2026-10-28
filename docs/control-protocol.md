@@ -290,14 +290,13 @@ makes the UI flicker while it runs.
 
 `file.info` reports `{title, path, slides, dirty}` and **no document id**, so document
 identity has to be agent-side bookkeeping. While a document is unsaved, the only
-fingerprint is its title — the agent anchors on it and refuses writes when it changes.
-Once the file is saved, `path` becomes the identity: the anchor upgrades to the file path
-and is persisted (`<dataDir>/anchors.json`), so a restarted app does not lose the
-connection to the file — the agent re-opens it by path with `file.open` and keeps writing
-to it. Save-as is not guessed through: a changed path with a live anchor means "bring the
-anchored file back", not "follow the new path", because nothing in the protocol can tell
-a save-as apart from switching to a different document. Two windows on the same file are
-still indistinguishable.
+fingerprint is its title. Once the file is saved, `path` becomes the identity and the
+anchor is persisted (`<dataDir>/anchors.json`). The anchor follows the active document:
+whatever the agent or the user opens, switches to or saves-as becomes the anchored file
+as soon as its identity reads back — what is on screen is what the agent edits. Only
+when no document can be read at all (the app was restarted) does the agent re-open the
+anchored file by path with `file.open`. Two windows on the same file are still
+indistinguishable.
 
 The channel never announces a save. No generation has a notification or subscription
 mechanism — everything is request/response — so a user-side save is only visible by

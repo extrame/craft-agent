@@ -377,9 +377,10 @@ The measurements behind each row, all on DeckCraft 0.11.1:
 4. **The document layer has no parameters.** After you manually create or switch a document,
    an agent's next `insert` writes into *a different document*, silently.
    → Every write anchors on the active document (a `title + path` fingerprint from `file.info`)
-   and compares before writing; on drift it **refuses to send the command** and explains how to
-   switch back. Document-level commands (`file.new`, `window.next`, `file.close`) count as
-   explicit intent and re-anchor afterwards.
+   and compares before writing; when the active document has changed — whether you switched
+   or the agent opened another file — **the anchor follows it** and the move is reported in
+   `guardNotes`. Document-level commands (`file.new`, `file.open`, `window.next`, `file.close`)
+   count as explicit intent and re-anchor right after executing.
 
 5. **`insert.*` takes no page argument.** `slide.new` switches the page as a side effect, but
    `design.background {index}` switches it back, so following inserts land elsewhere.
@@ -488,13 +489,14 @@ The order is fixed, and any failure stops where it happened:
   Rolling back is your undo, or a future `document.inspect` snapshot plus rebuild.
 - **Document identity starts as `title + path` and becomes `path` once the file is saved**,
   because the protocol has no document id. The anchor is the agent's own bookkeeping,
-  persisted at `<dataDir>/anchors.json`: after a save the anchor upgrades to the file path,
-  and if the app was restarted (or the window moved on), the guard re-opens the anchored
-  file by path with `file.open` before writing. Save-as is the one case it will not guess
-  through: the guard brings the anchored file back instead of following the new path —
-  re-anchor with `craft_doc anchor` if the new file is what you want. Two windows on the
-  same file still cannot be told apart. The anchor is visible — and releasable — in the
-  window's file-anchor panel; a release makes the next write re-anchor in place.
+  persisted at `<dataDir>/anchors.json`. **The anchor follows the active document**: whether
+  the switch comes from you or from the agent (`file.open`, `file.new`, save-as), once the
+  new document's identity reads back the anchor moves to it and the write tools report the
+  move in `guardNotes` — what is open on screen is what the AI edits. Only when no document
+  can be read at all (the app was restarted) does the guard re-open the anchored file by
+  path with `file.open` before writing. Two windows on the same file still cannot be told
+  apart. The anchor is visible — and releasable — in the window's file-anchor panel; a
+  release makes the next write re-anchor in place.
 - `craft_doc list` really does switch through every window and back, so the screen flickers
   and it should not be polled while someone is working.
 - The anchor is a single target per session: to touch two documents you must alternate with

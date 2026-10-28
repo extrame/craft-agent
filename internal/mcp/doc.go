@@ -32,6 +32,7 @@ import (
 const (
 	cmdFileInfo   = "file.info"
 	cmdFileNew    = "file.new"
+	cmdFileOpen   = "file.open"
 	cmdFileClose  = "file.close"
 	cmdWindowNext = "window.next"
 )
@@ -167,7 +168,7 @@ func (b *bridge) listDocs(ctx context.Context, c *control.Client) ([]docEntry, i
 
 func (b *bridge) registerDocTools(s *server.MCPServer) {
 	s.AddTool(mcp.NewTool("craft_doc",
-		mcp.WithDescription("Work with the DOCUMENT layer explicitly. The control channel has no document parameter: every write goes to whatever document is active, and file.new / the user's own window switch changes that silently. craft_doc makes it visible: info reads the active document, list enumerates every open document, use switches to one and anchors it, anchor pins the current one, release unpins. Every write tool refuses to run when the active document is not the anchored one."),
+		mcp.WithDescription("Work with the DOCUMENT layer explicitly. The control channel has no document parameter: every write goes to whatever document is active, and file.new / the user's own window switch changes that silently. craft_doc makes it visible: info reads the active document, list enumerates every open document, use switches to one and anchors it, anchor pins the current one, release unpins. The anchor always follows the active document: when the user or you open/switch/save-as another file, subsequent writes go to that file (reported in guardNotes); only when no document can be read (app restarted) does the guard re-open the anchored file by path."),
 		mcp.WithString("app", mcp.Required(), mcp.Description("App id.")),
 		mcp.WithString("action", mcp.Required(), mcp.Description("info | list | use | new | close | anchor | release")),
 		mcp.WithNumber("index", mcp.Description("Document index for action=use (0-based, as returned by list/new).")),
