@@ -552,6 +552,10 @@ func (s *AppService) Install(id string) (InstallResult, error) {
 
 	start := time.Now()
 	res := InstallResult{AppID: id, Fresh: !app.Installed()}
+	// 升级前的版本要在这里记：之后应用会退出、包会被换掉，再 Detect 就是新的了。
+	// latest 是「要去的版本」而不是「现在装的版本」，拿它当 from 只在
+	// 重复安装最新版时碰巧对 —— 正常升级会把 v0.13.0 → v0.14.0 记成 v0.14.0 → v0.14.0。
+	before := release.Detect(app).Version
 	fail := func(err error) (InstallResult, error) {
 		// 带上出网方式：下载慢、连不上时，第一件要排除的就是「有没有走代理」。
 		note := err.Error()
@@ -632,9 +636,15 @@ func (s *AppService) Install(id string) (InstallResult, error) {
 		}
 	}
 
-	detail := fmt.Sprintf("v%s → v%s", latest.Version, out.Version)
-	if res.Fresh {
+	var detail string
+	switch {
+	case res.Fresh:
 		detail = "安装 v" + out.Version
+	case before == "":
+		// 装了但读不到旧版本（Info.plist 缺字段之类）：如实说不知道，别拿新版本冒充。
+		detail = "升级到 v" + out.Version + "（原版本未能读取）"
+	default:
+		detail = fmt.Sprintf("v%s → v%s", before, out.Version)
 	}
 	s.journal.Append(journal.Entry{
 		At: time.Now(), Source: "gui", Session: "gui", Kind: "update",
