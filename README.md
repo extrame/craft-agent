@@ -18,7 +18,8 @@ what an agent is doing to them while it does it.
   <a href="#install">Install</a> ·
   <a href="#build-from-source">Build</a> ·
   <a href="#mcp-tools">MCP tools</a> ·
-  <a href="docs/control-protocol.md">Protocol</a>
+  <a href="docs/control-protocol.md">Protocol</a> ·
+  <a href="docs/architecture.md">Architecture</a>
 </p>
 
 <p align="center">
@@ -43,6 +44,10 @@ One binary, two ways to run it:
 There is deliberately no editor and no built-in chat. The AI comes in through MCP, you come
 in through the app's own window, both touch the same process and the same file, and every
 action lands in the same log.
+
+The governing rule — the main app owns execution, CLI and MCP are thin clients, and every
+integrated app must expose a readable document identity plus open-by-path — is written up
+in [`docs/architecture.md`](docs/architecture.md).
 
 ## Why not just another launcher
 
@@ -179,6 +184,8 @@ internal/
 services/app.go             Wails bindings (state, actions, log, updates, MCP config)
 frontend/                   Vite + TypeScript, no framework; i18n in src/i18n.ts
 docs/control-protocol.md    what we measured about the control channel
+docs/architecture.md        the main design principles: the main app owns execution,
+                            and what every integrated app must provide
 ```
 
 ## Install

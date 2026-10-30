@@ -17,7 +17,8 @@
   <a href="#安装">安装</a> ·
   <a href="#从源码构建">构建</a> ·
   <a href="#mcp-工具">MCP 工具</a> ·
-  <a href="docs/control-protocol.md">协议文档</a>
+  <a href="docs/control-protocol.md">协议文档</a> ·
+  <a href="docs/architecture.md">架构文档</a>
 </p>
 
 <p align="center">
@@ -38,6 +39,10 @@ Craft 套件是桌面图形工具，每个应用都能在启动时打开一个�
 
 界面刻意不做编辑器，也不内置聊天：AI 从 MCP 进来，人从应用自己的窗口进来，
 两边操作的是同一个进程、同一份文件，谁做了什么都会落在同一条流水上。
+
+贯穿全局的设计原则 —— **执行收口主程序，CLI/MCP 只做薄客户端；每个对接软件都必须
+能读出当前文档身份、能按路径打开文件** —— 完整记录在
+[`docs/architecture.md`](docs/architecture.md)。
 
 ## 为什么不是又一个 launcher
 
@@ -164,6 +169,7 @@ internal/
 services/app.go            Wails 绑定（状态、动作、流水、更新、MCP 配置）
 frontend/                  Vite + TypeScript，无框架；i18n 在 src/i18n.ts
 docs/control-protocol.md   控制通道的实测记录
+docs/architecture.md       主要设计思路：执行收口主程序，以及对每个对接软件的统一要求
 ```
 
 ## 安装
