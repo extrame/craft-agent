@@ -103,20 +103,25 @@ type fileInfo struct {
 // idSources 记住每个应用的身份来源，只在轮询 goroutine
 // 里读写（watchMu 串行化），不需要锁。
 const (
-	srcFileInfo = "file.info"
-	srcDocList  = "doc.list"
+	srcFileInfo       = "file.info"
+	srcDocList        = "doc.list"
+	srcDrawingInspect = "drawing.inspect"
 )
 
 var idSources = map[string]string{}
 
 // readIdentity 读当前文档身份，按应用分派来源。
 // DeckCraft 这代有 file.info（只报当前文档）；FigCraft 0.11.2 没有，
-// 但 doc.list 返回全部打开文档（name/path/dirty/active），取 active 项。
-// 先按记住的来源读；没有记录时先试 file.info，报 unknown command 就改试
-// doc.list 并把成功的那个记住 —— 每轮只探测一次，不会反复双发。
+// 但 doc.list 返回全部打开文档（name/path/dirty/active），取 active 项；
+// CADCraft 0.13 两个都没有，drawing.inspect 与 file.info 同形（title/path/dirty）。
+// 先按记住的来源读；没有记录时逐个试，报 unknown command 就改试下一个，
+// 并把成功的那个记住 —— 每轮只探测一次，不会反复连发。
 func readIdentity(ctx context.Context, app string, client *control.Client) (fileInfo, error) {
-	if idSources[app] == srcDocList {
+	switch idSources[app] {
+	case srcDocList:
 		return readDocListIdentity(ctx, client)
+	case srcDrawingInspect:
+		return readDrawingInspect(ctx, client)
 	}
 	info, err := readFileInfo(ctx, client)
 	if err == nil {
@@ -129,6 +134,14 @@ func readIdentity(ctx context.Context, app string, client *control.Client) (file
 	if err2 == nil {
 		idSources[app] = srcDocList
 		return info2, nil
+	}
+	if !strings.Contains(err2.Error(), "unknown command") {
+		return fileInfo{}, err
+	}
+	info3, err3 := readDrawingInspect(ctx, client)
+	if err3 == nil {
+		idSources[app] = srcDrawingInspect
+		return info3, nil
 	}
 	return fileInfo{}, err
 }
@@ -171,6 +184,20 @@ func readDocListIdentity(ctx context.Context, client *control.Client) (fileInfo,
 		}
 	}
 	return fileInfo{Title: active.Name, Path: active.Path, Dirty: active.Dirty}, nil
+}
+
+// readDrawingInspect 是 drawing.inspect 来源（CADCraft 0.13）：
+// 返回字段与 file.info 同形，path 为 null 时解成空串。
+func readDrawingInspect(ctx context.Context, client *control.Client) (fileInfo, error) {
+	raw, err := client.Execute(ctx, "drawing.inspect", nil)
+	if err != nil {
+		return fileInfo{}, err
+	}
+	var info fileInfo
+	if err := json.Unmarshal(raw, &info); err != nil {
+		return fileInfo{}, fmt.Errorf("drawing.inspect 返回无法解析: %w", err)
+	}
+	return info, nil
 }
 
 // saveTransition 判断这次观察是不是「用户保存了」。

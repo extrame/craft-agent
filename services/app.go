@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,12 +24,15 @@ import (
 
 	"craft-agent/internal/control"
 	"craft-agent/internal/craft"
+	"craft-agent/internal/gateway"
 	"craft-agent/internal/host"
 	"craft-agent/internal/journal"
 	"craft-agent/internal/menu"
 	"craft-agent/internal/release"
 	"craft-agent/internal/tray"
 	"craft-agent/internal/update"
+
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 // Version 由 main 注入。
@@ -70,6 +74,9 @@ type AppService struct {
 	// watchMu 让锚点轮询同一时刻只跑一轮（见 anchor_watch.go）。
 	watchMu sync.Mutex
 
+	// gatewayStop 停掉命令转发口（见 startGateway）；未开启时为 nil。
+	gatewayStop func()
+
 	// Emit 把安装进度推给界面；由 main 接上 Wails 事件总线。
 	Emit func(UpdateProgress)
 
@@ -93,16 +100,72 @@ func NewAppService(h *host.Host, j *journal.Journal) *AppService {
 	// 上次预加载的结果先装回来：界面第一帧就有菜单，不用等应用响应。
 	_ = svc.menus.Load()
 	return svc
-} // ServiceStartup 由 Wails 在应用启动时调用。
-func (s *AppService) ServiceStartup(ctx context.Context) {
+}
+
+// ServiceStartup 由 Wails 在应用启动时调用。
+//
+// 签名必须与 wails 的 ServiceStartup 接口完全一致（ctx + ServiceOptions + error）——
+// 之前写成只有 ctx 的版本，接口不满足，框架从未调用过它：
+// 锚点保存感知轮询因此一直空转。这是 2026-10-30 接 gateway 时才暴露的。
+func (s *AppService) ServiceStartup(ctx context.Context, options application.ServiceOptions) error {
 	s.ctx, s.cancel = context.WithCancel(ctx)
 	s.startAnchorWatch()
+	s.startGateway()
+	return nil
 }
 
 // ServiceShutdown 在窗口关闭时断开所有通道（应用进程留给用户）。
-func (s *AppService) ServiceShutdown() {
+func (s *AppService) ServiceShutdown() error {
+	if s.gatewayStop != nil {
+		s.gatewayStop()
+	}
 	s.cancel()
 	s.host.Close()
+	return nil
+}
+
+/* ---------------- 转发口 ---------------- */
+
+// startGateway 开出命令转发口：CLI（craft-agent run）与将来的 MCP 都只做
+// 薄客户端，命令转发到这里执行。应用由主程序启动并持有 —— 主程序的进程组
+// 不随任何一次调用结束，AI 客户端沙箱收割不到它，窗口就一闪不过。
+func (s *AppService) startGateway() {
+	stop, err := gateway.Serve(s.host.DataDir(), s.gatewayExec)
+	if err != nil {
+		log.Printf("命令转发口未开启：%v（CLI 将退回直连模式）", err)
+		return
+	}
+	s.gatewayStop = stop
+}
+
+// gatewayExec 执行一条转发来的命令，并把它记进操作流 ——
+// AI 客户端用 CLI 干的每件事，用户在窗口里都看得到。
+func (s *AppService) gatewayExec(ctx context.Context, appID, command string, params json.RawMessage) (json.RawMessage, error) {
+	start := time.Now()
+	client, err := s.host.Ensure(ctx, appID)
+	if err != nil {
+		s.journal.Append(journal.Entry{
+			At: time.Now(), Source: "cli", Session: "cli", Kind: "command",
+			AppID: appID, Command: command, OK: false,
+			Detail:   err.Error(),
+			Duration: time.Since(start).Milliseconds(),
+		})
+		return nil, err
+	}
+	out, err := client.Execute(ctx, command, params)
+	detail := ""
+	if err != nil {
+		detail = err.Error()
+	} else if len(out) > 0 && len(out) <= 200 {
+		detail = string(out)
+	}
+	s.journal.Append(journal.Entry{
+		At: time.Now(), Source: "cli", Session: "cli", Kind: "command",
+		AppID: appID, Command: command, OK: err == nil,
+		Detail:   detail,
+		Duration: time.Since(start).Milliseconds(),
+	})
+	return out, err
 }
 
 /* ---------------- 状态 ---------------- */

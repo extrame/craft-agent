@@ -36,16 +36,27 @@ const (
 	cmdFileClose  = "file.close"
 	cmdWindowNext = "window.next"
 	cmdDocList    = "doc.list"
+	// CADCraft 0.13：AutoCAD 系命名。身份读 drawing.inspect（与 file.info 同形），
+	// 按路径打开文件是 `open`（实测接受 {"path": …}）。
+	cmdDrawingInspect = "drawing.inspect"
+	cmdOpen           = "open"
 )
 
 // 文档身份来源。DeckCraft 这代用 file.info（只报当前文档）；
 // FigCraft 0.11.2 没有 file.info，但 doc.list 直接返回全部打开文档
 // （name/path/dirty/active），信息反而更全 —— 实测（2026-10-28）：
-//   [{"active":true,"dirty":true,"index":0,"name":"新版网站设计",
-//     "path":"/Users/…/新版网站设计.figcraft"}]
+//
+//	[{"active":true,"dirty":true,"index":0,"name":"新版网站设计",
+//	  "path":"/Users/…/新版网站设计.figcraft"}]
+//
+// CADCraft 0.13 两个都没有，但 drawing.inspect 返回的字段与 file.info 同形
+// （title/path/dirty，外加 layers/extents 等 CAD 状态）—— 实测（2026-10-30）：
+//
+//	{"dirty":false,"path":null,"title":"Drawing1", …}
 const (
-	srcFileInfo = "file.info"
-	srcDocList  = "doc.list"
+	srcFileInfo       = "file.info"
+	srcDocList        = "doc.list"
+	srcDrawingInspect = "drawing.inspect"
 )
 
 // maxDocs 是枚举窗口的上限。超过这个数量的文档没人会指望 agent 去管。
@@ -75,10 +86,14 @@ func (d docIdentity) String() string {
 
 // readDoc 读活动文档的身份，按应用的身份来源分派。
 func (b *bridge) readDoc(ctx context.Context, app craft.App, c *control.Client) (docIdentity, error) {
-	if b.identitySource(ctx, app, c) == srcDocList {
+	switch b.identitySource(ctx, app, c) {
+	case srcDocList:
 		return b.readDocViaDocList(ctx, c)
+	case srcDrawingInspect:
+		return b.readDocViaDrawingInspect(ctx, c)
+	default:
+		return b.readDocViaFileInfo(ctx, c)
 	}
-	return b.readDocViaFileInfo(ctx, c)
 }
 
 // readDocViaFileInfo 是 file.info 来源：只报当前文档。
@@ -148,11 +163,30 @@ func (b *bridge) readDocViaDocList(ctx context.Context, c *control.Client) (docI
 	return docIdentity{Title: active.Name, Path: active.Path, Dirty: active.Dirty}, nil
 }
 
+// readDocViaDrawingInspect 是 drawing.inspect 来源（CADCraft 0.13）。
+// 返回字段与 file.info 同形（title/path/dirty），path 为 null 时解成空串。
+func (b *bridge) readDocViaDrawingInspect(ctx context.Context, c *control.Client) (docIdentity, error) {
+	raw, err := c.Execute(ctx, cmdDrawingInspect, nil)
+	if err != nil {
+		return docIdentity{}, err
+	}
+	var info struct {
+		Title string `json:"title"`
+		Path  string `json:"path"`
+		Dirty bool   `json:"dirty"`
+	}
+	if err := json.Unmarshal(raw, &info); err != nil {
+		return docIdentity{}, fmt.Errorf("drawing.inspect 返回无法解析: %w", err)
+	}
+	return docIdentity{Title: info.Title, Path: info.Path, Dirty: info.Dirty}, nil
+}
+
 // hasDocModel 报告该应用是否真的提供文档身份。
 //
 // 文档上下文是 agent 端维护的，但「锚点比对」这一半依赖应用能回答「我在哪一份里」。
-// 来源有两条：file.info（DeckCraft 这代）、doc.list（FigCraft 0.11.2）。
-// 两条都没有的应用走降级模式：守卫跳过，结果里如实注明 guard=none。
+// 来源有三条：file.info（DeckCraft 这代）、doc.list（FigCraft 0.11.2）、
+// drawing.inspect（CADCraft 0.13）。一条都没有的应用走降级模式：
+// 守卫跳过，结果里如实注明 guard=none。
 func (b *bridge) hasDocModel(ctx context.Context, app craft.App, c *control.Client) bool {
 	return b.identitySource(ctx, app, c) != ""
 }
@@ -171,11 +205,14 @@ func (b *bridge) identitySource(ctx context.Context, app craft.App, c *control.C
 	if set[cmdDocList] {
 		return srcDocList
 	}
+	if set[cmdDrawingInspect] {
+		return srcDrawingInspect
+	}
 	return ""
 }
 
-const docGuardNote = "该应用既没有 file.info 也没有 doc.list，文档身份不成立，文档守卫不生效：" +
-	"写入始终作用于当前活动文档，切换文档后请先用该应用的 inspect 类命令确认落点。"
+const docGuardNote = "该应用没有可读文档身份的命令（file.info / doc.list / drawing.inspect 都不存在），" +
+	"文档守卫不生效：写入始终作用于当前活动文档，切换文档后请先用该应用的 inspect 类命令确认落点。"
 
 // anchorNow 把当前文档记为该应用的锚点（内存 + 落盘，见 anchor.go）。
 func (b *bridge) anchorNow(app craft.App, doc docIdentity) {
@@ -198,17 +235,31 @@ type docEntry struct {
 	Active bool `json:"active"`
 }
 
-// listDocs 枚举所有打开的文档。
+// listDocs 枚举所有打开的文档，按应用的身份来源分派。
+func (b *bridge) listDocs(ctx context.Context, app craft.App, c *control.Client) ([]docEntry, int, error) {
+	switch b.identitySource(ctx, app, c) {
+	case srcDocList:
+		return b.listDocsViaDocList(ctx, c)
+	case srcDrawingInspect:
+		// CADCraft 只报得出当前这一份（drawing.inspect 没有 index/列表），
+		// 枚举没有依据，如实给单条，别拿 window.next 去碰运气 ——
+		// 它没有这条命令，切窗口的尝试只会白费。
+		cur, err := b.readDocViaDrawingInspect(ctx, c)
+		if err != nil {
+			return nil, -1, err
+		}
+		return []docEntry{{Index: 0, docIdentity: cur, Active: true}}, 0, nil
+	default:
+		return b.listDocsViaWindows(ctx, c)
+	}
+}
+
+// listDocsViaWindows 是 file.info 来源的枚举：靠 window.next 逐个切过去读。
 //
-// doc.list 来源（FigCraft）：一条命令直接给全量，无需切换。
-// file.info 来源（DeckCraft）：只能靠 window.next {index} 逐个切过去读 file.info：
+// 只能这么干：file.info 只报当前文档，window.next {index} 是唯一的切换手段 ——
 // 越界索引是静默 no-op，所以「连续两次读到同一份身份」就是枚举结束。
 // 结束时切回原来的文档。
-func (b *bridge) listDocs(ctx context.Context, app craft.App, c *control.Client) ([]docEntry, int, error) {
-	if b.identitySource(ctx, app, c) == srcDocList {
-		return b.listDocsViaDocList(ctx, c)
-	}
-
+func (b *bridge) listDocsViaWindows(ctx context.Context, c *control.Client) ([]docEntry, int, error) {
 	start, err := b.readDocViaFileInfo(ctx, c)
 	if err != nil {
 		return nil, -1, err

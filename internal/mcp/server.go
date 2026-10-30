@@ -451,10 +451,10 @@ func (b *bridge) handleCommands(ctx context.Context, req mcp.CallToolRequest) (*
 		}
 	}
 	return mcp.NewToolResultJSON(map[string]any{
-		"total":   len(commands),
-		"query":   query,
-		"results": matches,
-		"groups":  m.Groups,
+		"total":    len(commands),
+		"query":    query,
+		"results":  matches,
+		"groups":   m.Groups,
 		"sections": sectionCounts(m),
 	})
 }

@@ -147,11 +147,20 @@ func (s *anchorStore) drop(app string) {
 // 守卫不再直接拒绝，而是先把锚点文件开回来再继续。
 // 命令表里没有 file.open 的应用返回明确错误，调用方按 drift 报。
 func (b *bridge) reopenDoc(ctx context.Context, app craft.App, c *control.Client, path string) (docIdentity, error) {
-	set, ok := b.commandSet(ctx, app, c)
-	if ok && !set[cmdFileOpen] {
-		return docIdentity{}, fmt.Errorf("该应用没有 file.open，无法凭路径找回文件")
+	// 按路径打开文件这条能力，名字每家不一样：DeckCraft 这代叫 file.open，
+	// CADCraft 0.13 是 AutoCAD 系的 `open`（实测接受 {"path": …}）。
+	// 命令表拿得到就按表挑，拿不到就按最常见的 file.open 试。
+	openCmd := cmdFileOpen
+	if set, ok := b.commandSet(ctx, app, c); ok {
+		switch {
+		case set[cmdFileOpen]:
+		case set[cmdOpen]:
+			openCmd = cmdOpen
+		default:
+			return docIdentity{}, fmt.Errorf("该应用没有按路径打开文件的命令（file.open / open），无法凭路径找回文件")
+		}
 	}
-	if _, err := c.Execute(ctx, cmdFileOpen, map[string]any{"path": path}); err != nil {
+	if _, err := c.Execute(ctx, openCmd, map[string]any{"path": path}); err != nil {
 		return docIdentity{}, err
 	}
 	return b.readDoc(ctx, app, c)

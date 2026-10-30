@@ -13,6 +13,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -29,6 +30,7 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 
 	"craft-agent/internal/craft"
+	"craft-agent/internal/gateway"
 	"craft-agent/internal/host"
 	"craft-agent/internal/journal"
 	mcpserver "craft-agent/internal/mcp"
@@ -717,6 +719,10 @@ func runApps(args []string) int {
 }
 
 // runOnce 是一次性执行，方便脚本与人工验证；不涉及 MCP，可以直接写 stdout。
+//
+// 执行位置分两路：主程序在运行时，命令**转发给主程序**执行 —— 应用由常驻的
+// 主程序启动并持有，窗口不随本进程消失（AI 客户端的沙箱收割不到它）；
+// 主程序不在时退回直连，自己拉起应用。两种方式对调用方是同一个接口。
 func runOnce(args []string) int {
 	if len(args) < 2 {
 		fmt.Fprintln(os.Stderr, "用法: craft-agent run <app> <command> [json]")
@@ -727,6 +733,36 @@ func runOnce(args []string) int {
 	if len(args) > 2 {
 		paramsJSON = args[2]
 	}
+	var params json.RawMessage
+	if strings.TrimSpace(paramsJSON) != "" {
+		if err := json.Unmarshal([]byte(paramsJSON), &params); err != nil {
+			fmt.Fprintf(os.Stderr, "参数不是合法 JSON: %v\n", err)
+			return 2
+		}
+	}
+
+	dir, err := host.DefaultDataDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "初始化失败: %v\n", err)
+		return 1
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// 转发优先。只有「主程序不在」才降级直连；命令本身的失败不降级 ——
+	// 命令可能有副作用，换条路再执行一遍等于做两次。
+	out, ferr := gateway.Call(ctx, dir, appID, command, params)
+	switch {
+	case ferr == nil:
+		printRunResult(out)
+		return 0
+	case errors.Is(ferr, gateway.ErrUnavailable):
+		// 落到下面的直连路径。
+	default:
+		fmt.Fprintf(os.Stderr, "%v\n", ferr)
+		return 1
+	}
 
 	h, _, err := newHost("", "cli", "cli", nil)
 	if err != nil {
@@ -735,32 +771,28 @@ func runOnce(args []string) int {
 	}
 	defer h.Close()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
 	client, err := h.Ensure(ctx, appID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
 	}
-	var params any
-	if strings.TrimSpace(paramsJSON) != "" {
-		if err := json.Unmarshal([]byte(paramsJSON), &params); err != nil {
-			fmt.Fprintf(os.Stderr, "参数不是合法 JSON: %v\n", err)
-			return 2
-		}
-	}
-	out, err := client.Execute(ctx, command, params)
+	out, err = client.Execute(ctx, command, params)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
 	}
+	printRunResult(out)
+	return 0
+}
+
+// printRunResult 把执行结果打到 stdout。空结果按 {"ok":true} 打印，
+// 让调用方不用区分「命令没返回值」和「协议错误」。
+func printRunResult(out json.RawMessage) {
 	if len(out) == 0 {
 		fmt.Println(`{"ok":true}`)
 	} else {
 		fmt.Println(strings.TrimSpace(string(out)))
 	}
-	return 0
 }
 
 func runGUI() {
