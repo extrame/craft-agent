@@ -190,7 +190,7 @@ docs/architecture.md        the main design principles: the main app owns execut
 
 ## Install
 
-There are no prebuilt downloads for Craft Agent itself yet: this is 0.0.2 and the interface
+There are no prebuilt downloads for Craft Agent itself yet: this is 0.2.1 and the interface
 still moves. Build it from source (next section) and put the binary anywhere on your `PATH`.
 
 **The apps are a different matter — Craft Agent installs those.** Paste the binary on a fresh

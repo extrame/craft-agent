@@ -36,7 +36,7 @@ import (
 )
 
 // Version 由 main 注入。
-var Version = "0.0.2"
+var Version = "0.2.1"
 
 // DocumentView 是文档状态摘要，只取界面要显示的部分。
 type DocumentView struct {
