@@ -31,6 +31,12 @@ Consequences that follow from the principle:
 - **Everything is journaled.** Forwarded commands are recorded in the activity feed with
   their source (`cli`, `mcp`, `gui`), so an AI agent working through the CLI is visible in
   the window like any other actor.
+- **Open-by-path is deduplicated.** Because agents (human or AI) retry, the executor
+  checks the app's active document identity before running `open` / `file.open`: when the
+  target path is already the active document, it answers
+  `{"ok":true,"alreadyOpen":true,...}` without asking the app again — a repeated open
+  would otherwise pop a dialog or a fresh window each time. Unreadable identity falls
+  through to a normal open.
 - **One executor, one state.** Document guards, anchors, menus and the journal all live
   with the main app. Thin clients hold no state beyond the request in flight.
 

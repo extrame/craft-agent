@@ -140,6 +140,10 @@ func (s *AppService) startGateway() {
 
 // gatewayExec 执行一条转发来的命令，并把它记进操作流 ——
 // AI 客户端用 CLI 干的每件事，用户在窗口里都看得到。
+//
+// open 类命令先查当前文档：路径已经是活动文档就不再执行 ——
+// agent 反复 open 同一个文件时，应用侧会弹重复的打开对话框或新窗口，
+// 而这个事实（文件已开着）控制通道本来就答得上来。
 func (s *AppService) gatewayExec(ctx context.Context, appID, command string, params json.RawMessage) (json.RawMessage, error) {
 	start := time.Now()
 	client, err := s.host.Ensure(ctx, appID)
@@ -152,6 +156,18 @@ func (s *AppService) gatewayExec(ctx context.Context, appID, command string, par
 		})
 		return nil, err
 	}
+
+	if out, skip := maybeSkipOpen(ctx, appID, client, command, params); skip {
+		detail := "文件已打开，跳过重复打开：" + string(out)
+		s.journal.Append(journal.Entry{
+			At: time.Now(), Source: "cli", Session: "cli", Kind: "command",
+			AppID: appID, Command: command, OK: true,
+			Detail:   detail,
+			Duration: time.Since(start).Milliseconds(),
+		})
+		return out, nil
+	}
+
 	out, err := client.Execute(ctx, command, params)
 	detail := ""
 	if err != nil {
@@ -166,6 +182,59 @@ func (s *AppService) gatewayExec(ctx context.Context, appID, command string, par
 		Duration: time.Since(start).Milliseconds(),
 	})
 	return out, err
+}
+
+// openCommands 是「按路径打开文档」的命令，跨应用统一拦截：
+// CADCraft 是 AutoCAD 风格的 open，DeckCraft 这代是 file.open。
+var openCommands = map[string]bool{
+	"open":      true,
+	"file.open": true,
+}
+
+// openTarget 从 open 参数里取路径；取不到（缺字段、不是对象）返回空串。
+func openTarget(params json.RawMessage) string {
+	var p struct {
+		Path string `json:"path"`
+	}
+	if json.Unmarshal(params, &p) != nil {
+		return ""
+	}
+	return strings.TrimSpace(p.Path)
+}
+
+// samePath 比较两个路径是否指同一个文件：macOS 文件系统不区分大小写，
+// Clean 抹掉多余分隔符。仅用于「是不是同一个文件」的判断，不做存在性检查。
+func samePath(a, b string) bool {
+	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
+}
+
+// maybeSkipOpen 判断这条 open 是否可以跳过：目标路径已经是活动文档时
+// 返回合成的成功结果（skip=true），不再打扰应用。其余情况一律放行去执行 ——
+// open 本身是幂等意图，身份读不出来时执行它是对的默认。
+func maybeSkipOpen(ctx context.Context, app string, client *control.Client, command string, params json.RawMessage) (json.RawMessage, bool) {
+	if !openCommands[command] {
+		return nil, false
+	}
+	target := openTarget(params)
+	if target == "" {
+		return nil, false
+	}
+	wctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	info, err := readIdentity(wctx, app, client)
+	if err != nil || info.Path == "" {
+		return nil, false
+	}
+	if !samePath(info.Path, target) {
+		return nil, false
+	}
+	out, _ := json.Marshal(map[string]any{
+		"ok":          true,
+		"alreadyOpen": true,
+		"path":        info.Path,
+		"title":       info.Title,
+	})
+	return out, true
 }
 
 /* ---------------- 状态 ---------------- */
