@@ -35,6 +35,7 @@ import (
 	"craft-agent/internal/craft"
 	"craft-agent/internal/gateway"
 	"craft-agent/internal/host"
+	"craft-agent/internal/ids"
 	"craft-agent/internal/journal"
 	mcpserver "craft-agent/internal/mcp"
 	"craft-agent/internal/menu"
@@ -121,7 +122,7 @@ func init() {
 }
 
 // newHost 装配宿主。Source / Session 决定流水里的归属：
-// GUI 写 "gui"，每个 MCP 进程写自己的 "mcp:<pid>"，界面靠它区分人操作和 agent 操作。
+// GUI 写 "gui"，MCP 会话写 8 位随机 id（internal/ids），界面靠它区分人操作和 agent 操作。
 func newHost(dataDir, source, session string, onEvent func(host.Event)) (*host.Host, *journal.Journal, error) {
 	dir := dataDir
 	if dir == "" {
@@ -665,7 +666,8 @@ func runMCP(args []string) int {
 		return 2
 	}
 
-	session := fmt.Sprintf("mcp:%d", os.Getpid())
+	// 会话 id 用 8 位随机串：pid 会复用还会复现，界面上两个 "mcp:4321" 分不清谁是谁。
+	session := ids.New()
 	h, j, err := newHost(*dataDir, "mcp", session, nil)
 	if err != nil {
 		log.Printf("[craft-agent] 初始化失败: %v", err)
@@ -676,7 +678,7 @@ func runMCP(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	log.Printf("[craft-agent] MCP 模式启动，工具粒度 %s，数据目录 %s", *mode, h.DataDir())
+	log.Printf("[craft-agent] MCP 模式启动，会话 %s，工具粒度 %s，数据目录 %s", session, *mode, h.DataDir())
 	if err := mcpserver.Serve(ctx, mcpserver.Options{
 		Host:    h,
 		Apps:    craft.Select(splitList(*appsArg)),

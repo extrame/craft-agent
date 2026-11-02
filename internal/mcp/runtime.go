@@ -24,7 +24,7 @@ type runtimeEntry struct {
 	Apps      []string  `json:"apps,omitempty"`
 }
 
-// runtimeFile 的形状：session id（mcp:<pid>）→ 条目。
+// runtimeFile 的形状：session id（8 位随机串，internal/ids）→ 条目。
 type runtimeFile struct {
 	Sessions map[string]runtimeEntry `json:"sessions"`
 }

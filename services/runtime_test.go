@@ -32,9 +32,9 @@ func TestMCPRuntimeViewsAndCleanup(t *testing.T) {
 	// 三个会话：活着的旧版本、活着的同版本、死了两天的僵尸。
 	old := time.Now().Add(-48 * time.Hour)
 	content := `{"sessions":{
-	  "mcp:100":{"pid":` + itoa(os.Getpid()) + `,"version":"0.0.1","startedAt":"` + time.Now().Format(time.RFC3339) + `","apps":["DeckCraft"]},
-	  "mcp:200":{"pid":` + itoa(os.Getpid()) + `,"version":"` + Version + `","startedAt":"` + time.Now().Format(time.RFC3339) + `"},
-	  "mcp:300":{"pid":999999999,"version":"0.0.1","startedAt":"` + old.Format(time.RFC3339) + `"}
+	  "aB3xK9qZ":{"pid":` + itoa(os.Getpid()) + `,"version":"0.0.1","startedAt":"` + time.Now().Format(time.RFC3339) + `","apps":["DeckCraft"]},
+	  "tR7mWd2p":{"pid":` + itoa(os.Getpid()) + `,"version":"` + Version + `","startedAt":"` + time.Now().Format(time.RFC3339) + `"},
+	  "xY4nHv8c":{"pid":999999999,"version":"0.0.1","startedAt":"` + old.Format(time.RFC3339) + `"}
 	}}`
 	path := filepath.Join(dir, "runtime.json")
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -49,13 +49,13 @@ func TestMCPRuntimeViewsAndCleanup(t *testing.T) {
 	for _, v := range got {
 		byID[v.Session] = v
 	}
-	if v := byID["mcp:100"]; !v.Outdated || !v.Alive || v.Version != "0.0.1" {
+	if v := byID["aB3xK9qZ"]; !v.Outdated || !v.Alive || v.Version != "0.0.1" {
 		t.Fatalf("旧版本活会话判定错: %+v", v)
 	}
-	if v := byID["mcp:200"]; v.Outdated {
+	if v := byID["tR7mWd2p"]; v.Outdated {
 		t.Fatalf("同版本会话不应标 outdated: %+v", v)
 	}
-	if v := byID["mcp:300"]; v.Alive {
+	if v := byID["xY4nHv8c"]; v.Alive {
 		t.Fatal("pid 999999999 不应被判活")
 	}
 
@@ -67,7 +67,7 @@ func TestMCPRuntimeViewsAndCleanup(t *testing.T) {
 	if err := json.Unmarshal(raw, &file); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := file.Sessions["mcp:300"]; ok {
+	if _, ok := file.Sessions["xY4nHv8c"]; ok {
 		t.Fatal("僵尸条目应已被清理")
 	}
 	if len(file.Sessions) != 2 {

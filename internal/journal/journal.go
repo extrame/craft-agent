@@ -22,7 +22,7 @@ import (
 type Entry struct {
 	At       time.Time `json:"at"`
 	Source   string    `json:"source"`  // gui | mcp
-	Session  string    `json:"session"` // 会话标签：gui，或 mcp:<pid>
+	Session  string    `json:"session"` // 会话标签：gui、cli，或 MCP 会话的 8 位随机 id（internal/ids）
 	Client   string    `json:"client,omitempty"`
 	AppID    string    `json:"appId,omitempty"`
 	Kind     string    `json:"kind"` // session-start | session-end | launch | connect | disconnect | command | error

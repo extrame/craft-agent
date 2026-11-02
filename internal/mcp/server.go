@@ -26,6 +26,7 @@ import (
 	"craft-agent/internal/control"
 	"craft-agent/internal/craft"
 	"craft-agent/internal/host"
+	"craft-agent/internal/ids"
 	"craft-agent/internal/journal"
 	"craft-agent/internal/menu"
 	"craft-agent/internal/release"
@@ -85,7 +86,8 @@ func Serve(ctx context.Context, opts Options) error {
 		opts.Apps = craft.Suite
 	}
 	if opts.Session == "" {
-		opts.Session = fmt.Sprintf("mcp:%d", os.Getpid())
+		// 8 位随机 id：pid 会复用，昨天和今天的 "mcp:4321" 在流水里分不开。
+		opts.Session = ids.New()
 	}
 
 	s := server.NewMCPServer(
