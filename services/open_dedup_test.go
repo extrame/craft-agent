@@ -4,21 +4,25 @@ import (
 	"testing"
 )
 
-func TestOpenTarget(t *testing.T) {
+func TestParseOpenParams(t *testing.T) {
 	cases := []struct {
-		name   string
-		params string
-		want   string
+		name      string
+		params    string
+		wantPath  string
+		wantForce bool
 	}{
-		{"正常路径", `{"path":"/tmp/a.dxf"}`, "/tmp/a.dxf"},
-		{"path 为空", `{"path":""}`, ""},
-		{"没有 path 字段", `{"ids":[1,2]}`, ""},
-		{"不是对象", `[1,2]`, ""},
+		{"正常路径", `{"path":"/tmp/a.dxf"}`, "/tmp/a.dxf", false},
+		{"force 开", `{"path":"/tmp/a.dxf","force":true}`, "/tmp/a.dxf", true},
+		{"newWindow 是 force 的别名", `{"path":"/tmp/a.dxf","newWindow":true}`, "/tmp/a.dxf", true},
+		{"path 为空", `{"path":""}`, "", false},
+		{"没有 path 字段", `{"ids":[1,2]}`, "", false},
+		{"不是对象", `[1,2]`, "", false},
 	}
 	for _, c := range cases {
-		got := openTarget([]byte(c.params))
-		if got != c.want {
-			t.Errorf("%s: openTarget(%s) = %q, want %q", c.name, c.params, got, c.want)
+		got := parseOpenParams([]byte(c.params))
+		if got.path != c.wantPath || got.force != c.wantForce {
+			t.Errorf("%s: parseOpenParams(%s) = {%q %v}, want {%q %v}",
+				c.name, c.params, got.path, got.force, c.wantPath, c.wantForce)
 		}
 	}
 }

@@ -114,6 +114,14 @@ export function Launch(id: string): $CancellablePromise<host$0.Status> {
 }
 
 /**
+ * LaunchApp 从托盘一键打开一个 Craft 应用：启动即带 --control，
+ * 应用出现在界面上、可被 CLI/MCP 直接用。
+ */
+export function LaunchApp(id: string): $CancellablePromise<void> {
+    return $Call.ByID(92050874, id);
+}
+
+/**
  * MCPConfig 生成可直接粘贴进 mcp.json 的片段。
  */
 export function MCPConfig(): $CancellablePromise<string> {
@@ -151,6 +159,17 @@ export function Menus(): $CancellablePromise<menu$0.Summary[] | null> {
  */
 export function OpenDataDir(): $CancellablePromise<void> {
     return $Call.ByID(2007356803);
+}
+
+/**
+ * OpenDocument 把一个文档路径分发到对应应用。
+ * 
+ * 流程：按扩展名找应用 → 启动/连接（默认带 connect）→ 命中「已打开」
+ * 去重就跳过 → 执行它的 DocOpen 命令。每一步都记流水：
+ * 用户双击文件这件事在窗口里要看得见，失败了更要看得见。
+ */
+export function OpenDocument(path: string): $CancellablePromise<void> {
+    return $Call.ByID(3357539461, path);
 }
 
 /**

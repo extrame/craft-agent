@@ -45,6 +45,21 @@ type App struct {
 	Control     Control `json:"control,omitempty"`     // 控制通道形态；空表示尚未实测
 	Port        int     `json:"port,omitempty"`        // ControlPort 时的默认端口；0 表示由宿主分配
 	ControlFlag string  `json:"controlFlag"`           // 启动控制通道的参数名
+
+	// DocExts 是该应用认领的文档扩展名（含点、小写）。
+	//
+	// 这些值不是我们定的，是各应用 bundle 里 Info.plist 自己声明的：
+	// 照抄过来，才能和系统「打开方式」里那份名单对上。实测（2026-10）：
+	//
+	//	DeckCraft  deckcraft → ai.storyteller.deckcraft.presentation
+	//	FigCraft   figcraft  → ai.storyteller.figcraft.document
+	//	CADCraft   dxf, dwg  → ai.storyteller.cadcraft.dxf / .dwg
+	//
+	// 校验办法：`mdls -name kMDItemContentType x.deckcraft` 看系统给的是什么类型。
+	DocExts []string `json:"docExts,omitempty"`
+	// DocOpen 是按路径打开文档的命令（FigCraft 的 file.open、CADCraft 的 open）。
+	// 与 DocExts 成对出现：有扩展名没有命令，分发就落不了地。
+	DocOpen string `json:"docOpen,omitempty"`
 }
 
 // DeckCraftID 是套件里唯一实测过「幻灯片 + 文本框 + 页」模型的成员。
@@ -162,16 +177,19 @@ var Suite = []App{
 	{ID: "designcraft", Name: "DesignCraft", Tagline: "版式设计与出版", Repo: "storytold/designcraft", Accent: "#7bb51c", Fallback: "#457008", TaglineEN: "Layout and publishing", ControlFlag: "--control"},
 	// FigCraft：实测 0.11.2。--control PORT，597 条命令，但**没有 file.info**
 	// —— 命令集是设计工具自己的（node.create / frame.create / shape.*），
-	// 依赖文档级模型的 craft_doc 在这里不成立。
-	{ID: "figcraft", Name: "FigCraft", Tagline: "界面设计与原型", Repo: "storytold/figcraft", Accent: "#02da96", Fallback: "#047a56", Control: ControlPort, Port: 7991, TaglineEN: "UI design and prototyping", ControlFlag: "--control"},
+	// 依赖文档级模型的 craft_doc 在这里不成立。file.open {path} 实测存在，
+	// 且「已打开的文件只返回 index」—— 应用自己处理重复打开。
+	{ID: "figcraft", Name: "FigCraft", Tagline: "界面设计与原型", Repo: "storytold/figcraft", Accent: "#02da96", Fallback: "#047a56", Control: ControlPort, Port: 7991, TaglineEN: "UI design and prototyping", ControlFlag: "--control", DocExts: []string{".figcraft"}, DocOpen: "file.open"},
 	{ID: "wordcraft", Name: "WordCraft", Tagline: "写作与文档排版", Repo: "storytold/wordcraft", Accent: "#3f5fe0", Fallback: "#2a44b8", Control: ControlPort, Port: 7992, TaglineEN: "Writing and document layout", ControlFlag: "--control"},
 	{ID: "soundcraft", Name: "SoundCraft", Tagline: "录音、剪辑与混音", Repo: "storytold/soundcraft", Accent: "#1fa5c9", Fallback: "#0e7290", Control: ControlPort, Port: 7993, TaglineEN: "Recording, editing, mixing", ControlFlag: "--control"},
 	// DeckCraft：完整实测过的应用。--control PORT，JSON lines，
 	// 方法见 docs/control-protocol.md（engine.execute / engine.commands / document.inspect…）。
-	{ID: "deckcraft", Name: "DeckCraft", Tagline: "演示文稿与放映", Repo: "storytold/deckcraft", Accent: "#f07a1e", Fallback: "#a84f0a", Control: ControlPort, Port: 7990, TaglineEN: "Presentations and slideshows", ControlFlag: "--control"},
+	{ID: "deckcraft", Name: "DeckCraft", Tagline: "演示文稿与放映", Repo: "storytold/deckcraft", Accent: "#f07a1e", Fallback: "#a84f0a", Control: ControlPort, Port: 7990, TaglineEN: "Presentations and slideshows", ControlFlag: "--control", DocExts: []string{".deckcraft"}, DocOpen: "file.open"},
 	// CADCraft 0.13：--control PORT，但每条请求要带令牌；令牌由应用写在
 	// ~/.cache/cadcraft-control-<port>.token。方法名仍是 engine.*。
-	{ID: "cadcraft", Name: "CADCraft", Tagline: "计算机辅助设计", Repo: "storytold/cadcraft", Accent: "#3ea6e8", Fallback: "#1a6fa8", Control: ControlPort, Port: 7994, TaglineEN: "Computer-aided design", ControlFlag: "--control"},
+	// 打开文档是 AutoCAD 风格的 open {path}；.dxf / .dwg 都是它在 bundle 里
+	// 自己声明的类型，命令对路径不挑格式，两个扩展名一起收。
+	{ID: "cadcraft", Name: "CADCraft", Tagline: "计算机辅助设计", Repo: "storytold/cadcraft", Accent: "#3ea6e8", Fallback: "#1a6fa8", Control: ControlPort, Port: 7994, TaglineEN: "Computer-aided design", ControlFlag: "--control", DocExts: []string{".dxf", ".dwg"}, DocOpen: "open"},
 	{ID: "gridcraft", Name: "GridCraft", Tagline: "表格与数据", Repo: "storytold/gridcraft", Accent: "#1f9d55", Fallback: "#12703a", Control: ControlPort, Port: 7995, TaglineEN: "Spreadsheets and data", ControlFlag: "--control"},
 }
 
@@ -180,6 +198,23 @@ func ByID(id string) (App, bool) {
 	for _, a := range Suite {
 		if a.ID == id {
 			return a, true
+		}
+	}
+	return App{}, false
+}
+
+// ForExt 按文档扩展名找应用（ext 含点，大小写不敏感）。
+// 找不到时返回 false —— 那种文件不是套件认领的，分发方不要瞎猜。
+func ForExt(ext string) (App, bool) {
+	ext = strings.ToLower(ext)
+	if ext == "" {
+		return App{}, false
+	}
+	for _, a := range Suite {
+		for _, e := range a.DocExts {
+			if e == ext {
+				return a, true
+			}
 		}
 	}
 	return App{}, false

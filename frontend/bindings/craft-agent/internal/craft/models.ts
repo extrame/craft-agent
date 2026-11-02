@@ -54,6 +54,26 @@ export interface App {
      * 启动控制通道的参数名
      */
     "controlFlag": string;
+
+    /**
+     * DocExts 是该应用认领的文档扩展名（含点、小写）。
+     * 
+     * 这些值不是我们定的，是各应用 bundle 里 Info.plist 自己声明的：
+     * 照抄过来，才能和系统「打开方式」里那份名单对上。实测（2026-10）：
+     * 
+     * 	DeckCraft  deckcraft → ai.storyteller.deckcraft.presentation
+     * 	FigCraft   figcraft  → ai.storyteller.figcraft.document
+     * 	CADCraft   dxf, dwg  → ai.storyteller.cadcraft.dxf / .dwg
+     * 
+     * 校验办法：`mdls -name kMDItemContentType x.deckcraft` 看系统给的是什么类型。
+     */
+    "docExts"?: string[] | null;
+
+    /**
+     * DocOpen 是按路径打开文档的命令（FigCraft 的 file.open、CADCraft 的 open）。
+     * 与 DocExts 成对出现：有扩展名没有命令，分发就落不了地。
+     */
+    "docOpen"?: string;
 }
 
 /**

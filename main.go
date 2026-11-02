@@ -22,12 +22,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"text/tabwriter"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 
 	"craft-agent/internal/craft"
 	"craft-agent/internal/gateway"
@@ -160,6 +163,8 @@ func main() {
 			os.Exit(runMenu(os.Args[2:]))
 		case "run":
 			os.Exit(runOnce(os.Args[2:]))
+		case "open":
+			os.Exit(runOpen(os.Args[2:]))
 		case "versions":
 			os.Exit(runVersions(os.Args[2:]))
 		case "install":
@@ -190,6 +195,7 @@ func usage() {
   craft-agent install <app> [--dry-run]          安装最新发布（含首次安装）
   craft-agent update <app> [--dry-run]            升级到最新发布（--dry-run 只查安装包）
   craft-agent run <app> <command> [json]          一次性执行命令，结果打印到 stdout
+  craft-agent open <file>                         按扩展名把文档交给对应应用（默认带控制通道）
   craft-agent version                            显示版本
 
 示例:
@@ -718,6 +724,75 @@ func runApps(args []string) int {
 	return 0
 }
 
+// runOpen 按扩展名把文档交给对应的应用。主程序在跑就转发过去
+// （「已打开」去重与流水都在那一边）；不在就直连启动 —— 无论哪条路，
+// 应用都由带控制通道的方式拉起，agent 可以直接接管。
+func runOpen(args []string) int {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "用法: craft-agent open <file>")
+		return 2
+	}
+	abs, err := filepath.Abs(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 1
+	}
+	if _, err := os.Stat(abs); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 1
+	}
+	ext := strings.ToLower(filepath.Ext(abs))
+	app, ok := craft.ForExt(ext)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "不认识的文档类型 %q：套件里没有应用声明接管它\n", ext)
+		return 2
+	}
+	if app.DocOpen == "" {
+		fmt.Fprintf(os.Stderr, "%s 还没有实测过按路径打开的命令，无法分发\n", app.Name)
+		return 1
+	}
+
+	dir, err := host.DefaultDataDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "初始化失败: %v\n", err)
+		return 1
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	params, _ := json.Marshal(map[string]any{"path": abs})
+	out, ferr := gateway.Call(ctx, dir, app.ID, app.DocOpen, params)
+	switch {
+	case ferr == nil:
+		printRunResult(out)
+		return 0
+	case errors.Is(ferr, gateway.ErrUnavailable):
+		// 主程序不在，落到直连路径。
+	default:
+		fmt.Fprintf(os.Stderr, "%v\n", ferr)
+		return 1
+	}
+
+	h, _, err := newHost("", "cli", "cli", nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "初始化失败: %v\n", err)
+		return 1
+	}
+	defer h.Close()
+	client, err := h.Ensure(ctx, app.ID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 1
+	}
+	out, err = client.Execute(ctx, app.DocOpen, params)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 1
+	}
+	printRunResult(out)
+	return 0
+}
+
 // runOnce 是一次性执行，方便脚本与人工验证；不涉及 MCP，可以直接写 stdout。
 //
 // 执行位置分两路：主程序在运行时，命令**转发给主程序**执行 —— 应用由常驻的
@@ -795,11 +870,27 @@ func printRunResult(out json.RawMessage) {
 	}
 }
 
+// uiReady 表示 Wails 运行时已经能接事件了。
+//
+// application.Get() 返回非空 ≠ 能发事件：globalApplication 先赋值，
+// customEventProcessor 后创建，中间那段时间调 Emit 会打在 nil 上直接 panic。
+// 后台任务（查更新、预加载菜单）都在启动期跑，正好会踩进这个窗口，
+// 所以发事件前先过这道闸：没就绪就丢掉 —— 状态每 2 秒重新推一遍，丢得起。
+var uiReady atomic.Bool
+
+// emitToUI 是唯一允许发往前端的事件出口。
+func emitToUI(name string, data any) {
+	if !uiReady.Load() {
+		return
+	}
+	if app := application.Get(); app != nil {
+		app.Event.Emit(name, data)
+	}
+}
+
 func runGUI() {
 	h, j, err := newHost("", "gui", "gui", func(e host.Event) {
-		if app := application.Get(); app != nil {
-			app.Event.Emit(eventActivity, e)
-		}
+		emitToUI(eventActivity, e)
 	})
 	if err != nil {
 		log.Fatalf("初始化失败: %v", err)
@@ -808,26 +899,8 @@ func runGUI() {
 
 	svc := services.NewAppService(h, j)
 	svc.Emit = func(p services.UpdateProgress) {
-		if app := application.Get(); app != nil {
-			app.Event.Emit(eventUpdate, p)
-		}
+		emitToUI(eventUpdate, p)
 	}
-
-	// 启动后在后台查一次最新版本：不阻塞窗口，失败也不影响使用（界面会显示原因）。
-	go func() {
-		if _, err := svc.CheckUpdates(false); err != nil {
-			log.Printf("检查更新失败: %v", err)
-		}
-	}()
-
-	// 菜单也预加载一次：只接管已经开着的应用，不替用户打开窗口。
-	// 缓存已经在 NewAppService 里读回来了，所以界面第一帧就有内容；
-	// 这一步只是把「应用在跑但菜单是旧的」补上。
-	go func() {
-		if n := len(svc.PreloadMenus()); n > 0 {
-			log.Printf("菜单已预加载 %d 个应用", n)
-		}
-	}()
 
 	app := application.New(application.Options{
 		Name:        "Craft Agent",
@@ -864,20 +937,36 @@ func runGUI() {
 	// 菜单栏 / 通知区域：窗口收起来之后，这是唯一的入口。
 	tray.Install(app, win, "zh", svc.OpenDataDir)
 
+	// 运行时真正起来之后再做启动期的后台活：之前那些 goroutine 在
+	// application.New 还没收尾时就跑了，发事件会撞上 nil processor。
+	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
+		uiReady.Store(true)
+		// 查一次最新版本：不阻塞窗口，失败也不影响使用（界面会显示原因）。
+		go func() {
+			if _, err := svc.CheckUpdates(false); err != nil {
+				log.Printf("检查更新失败: %v", err)
+			}
+		}()
+		// 菜单也预加载一次：只接管已经开着的应用，不替用户打开窗口。
+		// 缓存已经在 NewAppService 里读回来了，所以界面第一帧就有内容；
+		// 这一步只是把「应用在跑但菜单是旧的」补上。
+		go func() {
+			if n := len(svc.PreloadMenus()); n > 0 {
+				log.Printf("菜单已预加载 %d 个应用", n)
+			}
+		}()
+	})
+
 	// 状态与流水每 2 秒推一次：应用是别的进程，界面不能假设自己知道什么时候变了。
 	// 这是「保持更新」的兜底 —— 事件负责即时反馈，轮询负责把漏掉的补齐。
 	go func() {
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
-			a := application.Get()
-			if a == nil {
-				continue
-			}
 			suite := svc.Suite()
-			a.Event.Emit(eventStatus, suite)
-			a.Event.Emit(eventJournal, svc.Journal(120))
-			a.Event.Emit(eventMenus, svc.Menus())
+			emitToUI(eventStatus, suite)
+			emitToUI(eventJournal, svc.Journal(120))
+			emitToUI(eventMenus, svc.Menus())
 
 			// 窗口不可见时页面上的数字没人看，托盘 tooltip 是唯一还在报状态的地方。
 			online := 0
@@ -887,8 +976,32 @@ func runGUI() {
 				}
 			}
 			tray.SetOnline(online)
+
+			// 已安装的应用进托盘菜单，一键启动（默认带控制通道）。
+			// 安装与否用 host 的探测结果（InstalledPath 存在与否），不拿版本号推断：
+			// 版本读不出来（bundle 结构变了、权限不够）时那个应用其实还是装的。
+			apps := make([]tray.AppEntry, 0, len(suite))
+			for _, st := range suite {
+				apps = append(apps, tray.AppEntry{ID: st.App.ID, Name: st.App.Name, Installed: st.Installed})
+			}
+			tray.SetApps(apps, svc.LaunchApp)
 		}
 	}()
+
+	// 系统把文档递进来（Finder 双击 / 右键打开方式 / 拖到 Dock 图标上）：
+	// 按扩展名分发给对应的应用 —— 应用由主程序启动并持有，默认带控制通道。
+	app.Event.OnApplicationEvent(events.Common.ApplicationOpenedWithFile, func(e *application.ApplicationEvent) {
+		path := ""
+		if e.Context() != nil {
+			path = e.Context().Filename()
+		}
+		if strings.TrimSpace(path) == "" {
+			return
+		}
+		if err := svc.OpenDocument(path); err != nil {
+			log.Printf("打开文档 %s 失败: %v", path, err)
+		}
+	})
 
 	if err := app.Run(); err != nil {
 		log.Fatalf("窗口退出: %v", err)

@@ -10,11 +10,11 @@
         <key>CFBundleIdentifier</key>
             <string>ai.storyteller.craftagent</string>
         <key>CFBundleVersion</key>
-            <string>0.1.0</string>
+            <string>0.2.1</string>
         <key>CFBundleGetInfoString</key>
-            <string>This is a comment</string>
+            <string>Craft suite AI workbench</string>
         <key>CFBundleShortVersionString</key>
-            <string>0.1.0</string>
+            <string>0.2.1</string>
         <key>CFBundleIconFile</key>
             <string>icons</string>
         <key>CFBundleIconName</key>
@@ -25,5 +25,59 @@
             <string>true</string>
         <key>NSHumanReadableCopyright</key>
             <string>© 2026, My Company</string>
+        <!--
+            文档类型声明：让 Craft Agent 出现在 Finder 的「打开方式」里。
+
+            类型标识不是我们发明的 —— 每个 Craft 应用都在自己的 bundle 里
+            导出了它认领的类型（DeckCraft: ai.storyteller.deckcraft.presentation，
+            FigCraft: ai.storyteller.figcraft.document，CADCraft: …cadcraft.dxf/.dwg），
+            这里只是引用同一批标识。不写 UTExportedTypeDeclarations（那等于宣称
+            类型归我们定义，会和应用自己的声明打架），也不写 UTImportedTypeDeclarations
+            （那是「我认得这个类型」，同样不该由消费者来声明）。
+
+            LSHandlerRank 用 Alternate：只进「打开方式」名单，不抢默认。
+            双击文件仍然由各应用自己打开（默认处理程序还是它），
+            走 Craft Agent 打开时才带控制通道、可被 agent 接管。
+        -->
+        <key>CFBundleDocumentTypes</key>
+            <array>
+                <dict>
+                    <key>CFBundleTypeName</key>
+                    <string>DeckCraft presentation</string>
+                    <key>CFBundleTypeRole</key>
+                    <string>Editor</string>
+                    <key>LSHandlerRank</key>
+                    <string>Alternate</string>
+                    <key>LSItemContentTypes</key>
+                    <array>
+                        <string>ai.storyteller.deckcraft.presentation</string>
+                    </array>
+                </dict>
+                <dict>
+                    <key>CFBundleTypeName</key>
+                    <string>FigCraft design file</string>
+                    <key>CFBundleTypeRole</key>
+                    <string>Editor</string>
+                    <key>LSHandlerRank</key>
+                    <string>Alternate</string>
+                    <key>LSItemContentTypes</key>
+                    <array>
+                        <string>ai.storyteller.figcraft.document</string>
+                    </array>
+                </dict>
+                <dict>
+                    <key>CFBundleTypeName</key>
+                    <string>CADCraft drawing</string>
+                    <key>CFBundleTypeRole</key>
+                    <string>Editor</string>
+                    <key>LSHandlerRank</key>
+                    <string>Alternate</string>
+                    <key>LSItemContentTypes</key>
+                    <array>
+                        <string>ai.storyteller.cadcraft.dxf</string>
+                        <string>ai.storyteller.cadcraft.dwg</string>
+                    </array>
+                </dict>
+            </array>
     </dict>
 </plist>

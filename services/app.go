@@ -191,17 +191,6 @@ var openCommands = map[string]bool{
 	"file.open": true,
 }
 
-// openTarget 从 open 参数里取路径；取不到（缺字段、不是对象）返回空串。
-func openTarget(params json.RawMessage) string {
-	var p struct {
-		Path string `json:"path"`
-	}
-	if json.Unmarshal(params, &p) != nil {
-		return ""
-	}
-	return strings.TrimSpace(p.Path)
-}
-
 // samePath 比较两个路径是否指同一个文件：macOS 文件系统不区分大小写，
 // Clean 抹掉多余分隔符。仅用于「是不是同一个文件」的判断，不做存在性检查。
 func samePath(a, b string) bool {
@@ -209,14 +198,21 @@ func samePath(a, b string) bool {
 }
 
 // maybeSkipOpen 判断这条 open 是否可以跳过：目标路径已经是活动文档时
-// 返回合成的成功结果（skip=true），不再打扰应用。其余情况一律放行去执行 ——
-// open 本身是幂等意图，身份读不出来时执行它是对的默认。
+// 返回合成的成功结果（skip=true），不再打扰应用 —— 响应里带 retargeted
+// 与说明，agent 能读懂「文件已就绪、已定位到已打开的实例」。
+// 参数里带 force/newWindow 时跳过判断直接放行：应用支持一个文件开多个窗口
+// 的（如 CADCraft 的多图档），由它自己决定怎么开。
+// 身份读不到（没开文档、来源缺失、应用正忙）也放行 —— open 是幂等意图，
+// 读不出来时执行它是对的默认。
 func maybeSkipOpen(ctx context.Context, app string, client *control.Client, command string, params json.RawMessage) (json.RawMessage, bool) {
 	if !openCommands[command] {
 		return nil, false
 	}
-	target := openTarget(params)
-	if target == "" {
+	req := parseOpenParams(params)
+	if req.path == "" {
+		return nil, false
+	}
+	if req.force {
 		return nil, false
 	}
 	wctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -225,16 +221,39 @@ func maybeSkipOpen(ctx context.Context, app string, client *control.Client, comm
 	if err != nil || info.Path == "" {
 		return nil, false
 	}
-	if !samePath(info.Path, target) {
+	if !samePath(info.Path, req.path) {
 		return nil, false
 	}
 	out, _ := json.Marshal(map[string]any{
 		"ok":          true,
 		"alreadyOpen": true,
+		"retargeted":  true,
 		"path":        info.Path,
 		"title":       info.Title,
+		"note":        "文件已打开，已定位到该实例，命令未重复发送。确要新开一个窗口：参数里加 {\"force\": true}（仅部分应用支持同一文件多窗口）。",
 	})
 	return out, true
+}
+
+// openParams 是 open 类命令的参数口径：路径 + 可选的强制新开。
+type openParams struct {
+	path  string
+	force bool
+}
+
+func parseOpenParams(params json.RawMessage) openParams {
+	var raw struct {
+		Path      string `json:"path"`
+		Force     bool   `json:"force"`
+		NewWindow bool   `json:"newWindow"`
+	}
+	if json.Unmarshal(params, &raw) != nil {
+		return openParams{}
+	}
+	return openParams{
+		path:  strings.TrimSpace(raw.Path),
+		force: raw.Force || raw.NewWindow,
+	}
 }
 
 /* ---------------- 状态 ---------------- */

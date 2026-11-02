@@ -49,12 +49,21 @@ var words = map[string]Labels{
 	},
 }
 
+// AppEntry 是托盘「已安装」分区里的一项。
+type AppEntry struct {
+	ID        string // 应用 id（host.Ensure 用）
+	Name      string // 显示名
+	Installed bool
+}
+
 var (
 	mu       sync.Mutex
 	app      *application.App
 	win      *application.WebviewWindow
 	item     *application.SystemTray
 	opener   func() error
+	launcher func(id string) error
+	entries  []AppEntry
 	lang     = "zh"
 	online   = -1
 	quitting atomic.Bool
@@ -152,9 +161,33 @@ func SetOnline(n int) {
 	target.SetTooltip(text)
 }
 
+// SetApps 报告已安装的应用，托盘菜单「已安装」分区里逐项一键打开。
+// 列表不变就不重建 —— 状态每 2 秒推一次，菜单不能跟着重建。
+func SetApps(list []AppEntry, open func(id string) error) {
+	mu.Lock()
+	launcher = open
+	changed := len(list) != len(entries)
+	if !changed {
+		for i := range list {
+			if list[i] != entries[i] {
+				changed = true
+				break
+			}
+		}
+	}
+	if changed {
+		entries = append([]AppEntry(nil), list...)
+	}
+	mu.Unlock()
+	if changed {
+		rebuild()
+	}
+}
+
 func rebuild() {
 	mu.Lock()
 	a, target, w := app, item, words[lang]
+	apps := append([]AppEntry(nil), entries...)
 	mu.Unlock()
 	if a == nil || target == nil {
 		return
@@ -162,8 +195,32 @@ func rebuild() {
 
 	menu := a.NewMenu()
 	menu.Add(w.Show).OnClick(func(*application.Context) { Show() })
-	menu.Add(w.DataDir).OnClick(func(*application.Context) { OpenDataDir() })
+	// 一个没装就整段不出现 —— 空分区只会留下两条连着的分隔线。
+	installed := 0
+	for _, e := range apps {
+		if e.Installed {
+			installed++
+		}
+	}
+	if installed > 0 {
+		menu.AddSeparator()
+		for _, e := range apps {
+			entry := e // 闭包捕获
+			if !entry.Installed {
+				continue
+			}
+			menu.Add(entry.Name).OnClick(func(*application.Context) {
+				mu.Lock()
+				fn := launcher
+				mu.Unlock()
+				if fn != nil {
+					fn(entry.ID)
+				}
+			})
+		}
+	}
 	menu.AddSeparator()
+	menu.Add(w.DataDir).OnClick(func(*application.Context) { OpenDataDir() })
 	menu.Add(w.Quit).OnClick(func(*application.Context) { Quit() })
 	target.SetMenu(menu)
 }
