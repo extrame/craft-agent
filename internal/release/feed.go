@@ -181,6 +181,12 @@ func (c *Checker) Check(ctx context.Context, apps []craft.App, force bool) (Snap
 		// 但重定向后的下载地址属于新仓库，按旧仓库名校验就会全部判为非法。
 		latest, err := c.fetchGitHub(ctx, c.repoForLocked(app.Repo))
 		if err != nil {
+			// 宿主自己的仓库还没有发布是常态（craft-agent 尚未发包），
+			// 静默跳过：这条「错误」会让界面每次检查都弹「部分查询失败」，
+			// 而用户什么也做不了。等第一个 release 发出去，这里自然有结果。
+			if app.ID == craft.Self.ID {
+				continue
+			}
 			// 失败时保留上一次的结果，并如实记下原因：宁可显示旧版本 + 错误，
 			// 也不要清空后让人以为「没有更新」。
 			if old, ok := c.snapshot.Apps[app.ID]; ok {

@@ -21,6 +21,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -899,10 +900,23 @@ func runGUI() {
 	}
 	defer h.Close()
 
-	svc := services.NewAppService(h, j)
-	svc.Emit = func(p services.UpdateProgress) {
-		emitToUI(eventUpdate, p)
-	}
+	svc := services.NewAppService(h, j,
+		// 安装进度推给界面。
+		services.WithEmit(func(p services.UpdateProgress) {
+			emitToUI(eventUpdate, p)
+		}),
+		// 自更新换完包后的收尾：拉起新副本，再让本进程退场。顺序反了就没人退场；
+		// 稍等片刻是给新进程起步时间，避免本进程退出顺带收走启动环境。
+		services.WithRelaunch(func(path string) {
+			if strings.TrimSpace(path) != "" {
+				cmd := exec.Command("open", "-n", path)
+				_ = cmd.Start()
+			}
+			time.Sleep(1500 * time.Millisecond)
+			if a := application.Get(); a != nil {
+				a.Quit()
+			}
+		}))
 
 	app := application.New(application.Options{
 		Name:        "Craft Agent",
@@ -947,7 +961,12 @@ func runGUI() {
 		go func() {
 			if _, err := svc.CheckUpdates(false); err != nil {
 				log.Printf("检查更新失败: %v", err)
+			} else {
+				// 启动后的第一次检查也是第一次提醒机会：有更新就说一声。
+				svc.AnnounceUpdates()
 			}
+			// 之后每 6 小时查一次、有新版本再提醒（缓存 6 小时，出网频率即 6 小时一次）。
+			svc.CheckLoop()
 		}()
 		// 菜单也预加载一次：只接管已经开着的应用，不替用户打开窗口。
 		// 缓存已经在 NewAppService 里读回来了，所以界面第一帧就有内容；

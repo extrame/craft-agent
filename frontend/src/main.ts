@@ -54,6 +54,7 @@ const els = {
   btnMenuRefresh: $("#btn-menu-refresh") as HTMLButtonElement,
   btnInspect: $("#btn-inspect") as HTMLButtonElement,
   btnUpdates: $("#btn-updates") as HTMLButtonElement,
+  btnInstallAll: $("#btn-install-all") as HTMLButtonElement,
   sessions: $("#sessions") as HTMLUListElement,
   sessionNote: $("#session-note") as HTMLSpanElement,
   anchorBody: $("#anchor-body") as HTMLDivElement,
@@ -84,6 +85,7 @@ let updates: UpdateState | null = null;
 let checking = false;
 // 正在进行的安装。进度到位就替换这个对象并重画操作区，不额外维护一份状态。
 let install: UpdateProgress | null = null;
+let installingAll = false;
 // 本平台能不能代用户完成安装（macOS 可以；其他平台只做到下载并校验）。
 let autoInstall = false;
 // 菜单：摘要随状态推送，模型只在选中应用时读一次。分开是为了不让 600 条命令
@@ -503,12 +505,24 @@ function renderUpdateState() {
   if (!updates || !updates.checkedAt) {
     els.updateState.textContent = t("update.never");
     els.updateState.title = "";
+    els.btnInstallAll.hidden = true;
     return;
   }
   const parts = [t("update.checkedAt", { time: shortTime(updates.checkedAt) })];
   if (updates.updates > 0) parts.push(t("update.found", { n: updates.updates }));
   els.updateState.textContent = parts.join(" · ");
   els.updateState.title = updates.errors && updates.errors.length ? updates.errors.join("\n") : "";
+  // 宿主自己的更新单独一块：不在套件表格里，状态栏文字本身就是入口。
+  els.btnInstallAll.hidden = !(updates.updates > 0) || installingAll;
+  const self = updates.self;
+  if (self?.updateAvailable && self.latestVersion) {
+    els.updateState.textContent = t("update.selfAvailable", { v: self.latestVersion });
+    els.updateState.classList.add("is-self-update");
+    els.updateState.onclick = () => void doInstallSelf();
+  } else {
+    els.updateState.classList.remove("is-self-update");
+    els.updateState.onclick = null;
+  }
 }
 
 async function checkUpdates() {
@@ -534,6 +548,53 @@ async function checkUpdates() {
     els.btnUpdates.disabled = false;
     // 语言可能在等待期间被切过，这里按当前语言重新取词条。
     els.btnUpdates.textContent = t("topbar.check");
+  }
+}
+
+// 宿主自己的更新：换包完成后后端会拉起新副本并退出本进程，
+// 前端只负责发起点进度文案 —— 重启后界面自然由新进程接管。
+async function doInstallSelf() {
+  if (install) return;
+  try {
+    els.updateState.onclick = null;
+    els.updateState.textContent = t("update.selfInstalling");
+    const res: InstallResult = await AppService.InstallSelf();
+    if (res.manual) {
+      toast(t("update.downloaded"), true);
+    } else {
+      toast(t("update.selfDone", { v: res.version }));
+    }
+  } catch (err) {
+    toast(t("update.selfFailed", { msg: errText(err) }), true);
+    renderUpdateState();
+  }
+}
+
+// 「全部更新」：把所有可更新的应用逐个换到最新发布。后端串行执行，
+// 每个应用的下载/替换进度仍走 craft:update 事件，选中详情页能看到进度条。
+async function doInstallAll() {
+  if (installingAll || install) return;
+  installingAll = true;
+  els.btnInstallAll.disabled = true;
+  els.btnInstallAll.textContent = t("topbar.updatingAll", { done: 0, total: updates?.updates ?? 0 });
+  try {
+    const res = await AppService.InstallAll();
+    if (res.failed === 0) {
+      toast(t("update.allDone", { n: res.ok }));
+    } else {
+      toast(t("update.allPartial", { ok: res.ok, failed: res.failed }), true);
+    }
+    await refresh();
+    await loadUpdateState();
+  } catch (err) {
+    toast(t("update.installFailed", { msg: errText(err) }), true);
+    await refresh();
+  } finally {
+    installingAll = false;
+    install = null;
+    els.btnInstallAll.disabled = false;
+    els.btnInstallAll.textContent = t("topbar.installAll");
+    renderUpdateState();
   }
 }
 
@@ -1251,6 +1312,7 @@ function bind() {
     renderMenu();
   });
   els.btnUpdates.addEventListener("click", () => void checkUpdates());
+  els.btnInstallAll.addEventListener("click", () => void doInstallAll());
   $("#btn-mcp").addEventListener("click", () => void openMcp());
   $("#btn-modal-close").addEventListener("click", () => {
     els.modal.hidden = true;

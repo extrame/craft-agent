@@ -77,15 +77,49 @@ type AppService struct {
 	// gatewayStop 停掉命令转发口（见 startGateway）；未开启时为 nil。
 	gatewayStop func()
 
-	// Emit 把安装进度推给界面；由 main 接上 Wails 事件总线。
-	Emit func(UpdateProgress)
+	// hooks 收纳 main 注入的两个回调（界面事件推送、自更新收尾）。
+	// 收进非导出结构体是有意的：bindings 生成器会展开 AppService 的字段，
+	// 函数类型没法过 encoding/json，直接挂在结构体上会让生成告警。
+	hooks *hooks
 
 	ctx    context.Context
 	cancel context.CancelFunc
 }
 
+// option 在构造时注入回调。用构造参数而不是 setter：绑定到前端的
+// Service 不能有任何函数类型的导出方法/字段/类型，bindings 生成器会为
+// 此告警（函数类型没法过 encoding/json），所以这些类型都不导出。
+type option func(*AppService)
+
+// hooks 是 main 注入的两个回调：emit 推安装进度到界面（Wails 事件总线），
+// relaunch 是自更新换包完成后的收尾（拉起新副本 + 退出本进程）。
+type hooks struct {
+	emit     func(UpdateProgress)
+	relaunch func(path string)
+}
+
+// WithEmit 接上安装进度推送（Wails 事件总线）。
+func WithEmit(fn func(UpdateProgress)) option {
+	return func(s *AppService) {
+		if s.hooks == nil {
+			s.hooks = &hooks{}
+		}
+		s.hooks.emit = fn
+	}
+}
+
+// WithRelaunch 接上自更新换包完成后的收尾动作（拉起新副本 + 退出）。
+func WithRelaunch(fn func(path string)) option {
+	return func(s *AppService) {
+		if s.hooks == nil {
+			s.hooks = &hooks{}
+		}
+		s.hooks.relaunch = fn
+	}
+}
+
 // NewAppService 构造绑定层。
-func NewAppService(h *host.Host, j *journal.Journal) *AppService {
+func NewAppService(h *host.Host, j *journal.Journal, opts ...option) *AppService {
 	ctx, cancel := context.WithCancel(context.Background())
 	svc := &AppService{
 		host:       h,
@@ -96,6 +130,9 @@ func NewAppService(h *host.Host, j *journal.Journal) *AppService {
 		installing: map[string]bool{},
 		ctx:        ctx,
 		cancel:     cancel,
+	}
+	for _, opt := range opts {
+		opt(svc)
 	}
 	// 上次预加载的结果先装回来：界面第一帧就有菜单，不用等应用响应。
 	_ = svc.menus.Load()
@@ -603,6 +640,8 @@ type UpdateState struct {
 	Checked   int      `json:"checked"`
 	Updates   int      `json:"updates"`
 	Errors    []string `json:"errors"`
+	// Self 是宿主自己的更新状态：它不在套件表格里，界面单独一块展示。
+	Self SelfUpdate `json:"self"`
 }
 
 // UpdateState 返回缓存里的检查结果，不发网络请求。
@@ -619,7 +658,9 @@ func (s *AppService) CheckUpdates(force bool) (UpdateState, error) {
 	defer cancel()
 
 	start := time.Now()
-	snap, err := s.rel.Check(ctx, craft.Suite, force)
+	// 套件之外把宿主自己一起查了：界面上「更新 Craft Agent」这块要的就是
+	// 同一次检查的结果，单独再发一轮请求没有意义。
+	snap, err := s.rel.Check(ctx, append([]craft.App{craft.Self}, craft.Suite...), force)
 	state := s.summarize(snap)
 	if err != nil {
 		s.journal.Append(journal.Entry{
@@ -639,7 +680,7 @@ func (s *AppService) CheckUpdates(force bool) (UpdateState, error) {
 }
 
 func (s *AppService) summarize(snap release.Snapshot) UpdateState {
-	out := UpdateState{Source: snap.Source, Errors: snap.Errors}
+	out := UpdateState{Source: snap.Source, Errors: snap.Errors, Self: selfUpdateOf(snap)}
 	if !snap.CheckedAt.IsZero() {
 		out.CheckedAt = snap.CheckedAt.Format(time.RFC3339)
 	}
@@ -832,8 +873,8 @@ func (s *AppService) isOnline(id string) bool {
 }
 
 func (s *AppService) emit(p UpdateProgress) {
-	if s.Emit != nil {
-		s.Emit(p)
+	if s.hooks != nil && s.hooks.emit != nil {
+		s.hooks.emit(p)
 	}
 }
 

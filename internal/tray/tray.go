@@ -66,6 +66,7 @@ var (
 	entries  []AppEntry
 	lang     = "zh"
 	online   = -1
+	updates  = -1
 	quitting atomic.Bool
 )
 
@@ -184,6 +185,20 @@ func SetApps(list []AppEntry, open func(id string) error) {
 	}
 }
 
+// SetUpdates 报告「几个应用有更新」。大于零时菜单顶部出现一条
+// 「N 个应用有更新」，点开主窗口去装 —— 原版 launcher 的「有更新告诉你」
+// 在托盘这一侧的落点。
+func SetUpdates(n int) {
+	mu.Lock()
+	if n == updates {
+		mu.Unlock()
+		return
+	}
+	updates = n
+	mu.Unlock()
+	rebuild()
+}
+
 func rebuild() {
 	mu.Lock()
 	a, target, w := app, item, words[lang]
@@ -195,6 +210,13 @@ func rebuild() {
 
 	menu := a.NewMenu()
 	menu.Add(w.Show).OnClick(func(*application.Context) { Show() })
+	mu.Lock()
+	n := updates
+	mu.Unlock()
+	if n > 0 {
+		label := fmt.Sprintf("%d 个应用有更新", n)
+		menu.Add(label).OnClick(func(*application.Context) { Show() })
+	}
 	// 一个没装就整段不出现 —— 空分区只会留下两条连着的分隔线。
 	installed := 0
 	for _, e := range apps {

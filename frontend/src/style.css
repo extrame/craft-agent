@@ -994,3 +994,11 @@ code {
 
 #update-state { cursor: default; }
 #btn-updates:disabled { opacity: 0.55; }
+
+/* 状态栏里的自更新入口：同一条文字，可更新时变成可点的链接样式。 */
+#update-state.is-self-update {
+  color: var(--warn);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}

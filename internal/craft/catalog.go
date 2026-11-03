@@ -258,3 +258,21 @@ func (a App) DescribeControl() string {
 		return "未确认"
 	}
 }
+
+// Self 描述 Craft Agent 自己：自更新走的是和套件应用同一条安装管线
+// （查发布 → 挑资产 → 校验 → 换包），但**刻意不进 Suite** —— 菜单、MCP、
+// 锚点这些「对接软件」的机制都不该把宿主自己当成一个可对接的应用。
+//
+// Repo 指向本体的发布仓库；资产命名遵循 candidateNames 的同一套约定
+// （craft-agent-<ver>-macos-universal.dmg），发新版时把版本号同步进
+// build/darwin/Info.plist 的 CFBundleShortVersionString。
+var Self = App{
+	ID:          "craft-agent",
+	Name:        "Craft Agent",
+	Tagline:     "Craft 套件的 AI 协同工作台",
+	TaglineEN:   "AI workbench for the Craft suite",
+	Repo:        "extrame/craft-agent",
+	Accent:      "#64748b",
+	Fallback:    "#334155",
+	ControlFlag: "--control",
+}
