@@ -3,6 +3,10 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import { Create as $Create } from "@wailsio/runtime";
+
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as control$0 from "../control/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -11,7 +15,7 @@ import * as craft$0 from "../craft/models.js";
 /**
  * Event 是给界面看的活动记录。MCP 模式下没有订阅者，只留在内存里。
  */
-export interface Event {
+export class Event {
     "at": string;
     "appId": string;
 
@@ -20,6 +24,32 @@ export interface Event {
      */
     "kind": string;
     "message": string;
+
+    /** Creates a new Event instance. */
+    constructor($$source: Partial<Event> = {}) {
+        if (!("at" in $$source)) {
+            this["at"] = "0001-01-01T00:00:00.000Z";
+        }
+        if (!("appId" in $$source)) {
+            this["appId"] = "";
+        }
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("message" in $$source)) {
+            this["message"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Event instance from a string or object.
+     */
+    static createFrom($$source: any = {}): Event {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new Event($$parsedSource as Partial<Event>);
+    }
 }
 
 /**
@@ -28,7 +58,7 @@ export interface Event {
  * 版本与更新这几项由服务层填充（host 只管进程，不查网络）；MCP 侧看到的这几个字段为空，
  * 因为插件的职责是控制，不是升级。
  */
-export interface Status {
+export class Status {
     "app": craft$0.App;
     "installed": boolean;
     "path"?: string;
@@ -55,4 +85,48 @@ export interface Status {
     "latestPrerelease"?: boolean;
     "updateAvailable": boolean;
     "updateError"?: string;
+
+    /** Creates a new Status instance. */
+    constructor($$source: Partial<Status> = {}) {
+        if (!("app" in $$source)) {
+            this["app"] = (new craft$0.App());
+        }
+        if (!("installed" in $$source)) {
+            this["installed"] = false;
+        }
+        if (!("endpoint" in $$source)) {
+            this["endpoint"] = (new control$0.Endpoint());
+        }
+        if (!("connected" in $$source)) {
+            this["connected"] = false;
+        }
+        if (!("control" in $$source)) {
+            this["control"] = "";
+        }
+        if (!("updateAvailable" in $$source)) {
+            this["updateAvailable"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Status instance from a string or object.
+     */
+    static createFrom($$source: any = {}): Status {
+        const $$createField0_0 = $$createType0;
+        const $$createField3_0 = $$createType1;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("app" in $$parsedSource) {
+            $$parsedSource["app"] = $$createField0_0($$parsedSource["app"]);
+        }
+        if ("endpoint" in $$parsedSource) {
+            $$parsedSource["endpoint"] = $$createField3_0($$parsedSource["endpoint"]);
+        }
+        return new Status($$parsedSource as Partial<Status>);
+    }
 }
+
+// Private type creation functions
+const $$createType0 = craft$0.App.createFrom;
+const $$createType1 = control$0.Endpoint.createFrom;

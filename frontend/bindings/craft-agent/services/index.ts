@@ -6,11 +6,14 @@ export {
     AppService
 };
 
-export type {
+export {
     AnchorView,
     DocumentView,
+    InstallAllResult,
+    InstallOutcome,
     InstallResult,
     MCPSessionView,
+    SelfUpdate,
     SessionView,
     UpdateProgress,
     UpdateState

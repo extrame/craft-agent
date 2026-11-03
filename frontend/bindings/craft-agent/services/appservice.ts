@@ -8,7 +8,7 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
+import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Create } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -28,8 +28,18 @@ import * as $models from "./models.js";
  * Anchors 返回所有落盘的锚点，套件顺序在前、其余（已卸载应用的遗留）在后。
  * 文件不存在、损坏都当「没有」——锚点是意图，不是事实。
  */
-export function Anchors(): $CancellablePromise<$models.AnchorView[] | null> {
-    return $Call.ByID(1428944194);
+export function Anchors(): $CancellablePromise<$models.AnchorView[]> {
+    return $Call.ByID(1428944194).then(($result: any) => {
+        return $$createType1($result);
+    });
+}
+
+/**
+ * AnnounceUpdates 检查一遍快照，把没提醒过的新版本提醒掉，返回本次提醒数。
+ * 由定时检查与手动检查共用：手动点「检查更新」也该享受同一条提醒链路。
+ */
+export function AnnounceUpdates(): $CancellablePromise<number> {
+    return $Call.ByID(1507166143);
 }
 
 /**
@@ -40,20 +50,32 @@ export function CanAutoInstall(): $CancellablePromise<boolean> {
 }
 
 /**
+ * CheckLoop 周期性检查更新并提醒。force=false 走 6 小时缓存，所以
+ * 真实的出网频率就是 6 小时一次。ctx 结束（退出应用）即停。
+ */
+export function CheckLoop(): $CancellablePromise<void> {
+    return $Call.ByID(2929095602);
+}
+
+/**
  * CheckUpdates 查询最新发布。force=false 时 6 小时内的缓存直接复用。
  * 
  * 这是用户点「检查更新」走的路：同步返回结果，失败也把原因带回去，
  * 不要在界面上只留一个转圈。
  */
 export function CheckUpdates(force: boolean): $CancellablePromise<$models.UpdateState> {
-    return $Call.ByID(962751482, force);
+    return $Call.ByID(962751482, force).then(($result: any) => {
+        return $$createType2($result);
+    });
 }
 
 /**
  * Connect 接管一个已经在运行的实例，不启动新进程。
  */
 export function Connect(id: string): $CancellablePromise<host$0.Status> {
-    return $Call.ByID(2091253850, id);
+    return $Call.ByID(2091253850, id).then(($result: any) => {
+        return $$createType3($result);
+    });
 }
 
 /**
@@ -67,21 +89,27 @@ export function DataDir(): $CancellablePromise<string> {
  * Disconnect 断开连接并结束由本进程启动的实例。
  */
 export function Disconnect(id: string): $CancellablePromise<host$0.Status> {
-    return $Call.ByID(1353788542, id);
+    return $Call.ByID(1353788542, id).then(($result: any) => {
+        return $$createType3($result);
+    });
 }
 
 /**
  * Ensure 连接，必要时启动。
  */
 export function Ensure(id: string): $CancellablePromise<host$0.Status> {
-    return $Call.ByID(2211695226, id);
+    return $Call.ByID(2211695226, id).then(($result: any) => {
+        return $$createType3($result);
+    });
 }
 
 /**
  * Inspect 读当前文档摘要。状态面板用它显示「这个应用里现在是什么」。
  */
 export function Inspect(id: string): $CancellablePromise<$models.DocumentView> {
-    return $Call.ByID(3392488136, id);
+    return $Call.ByID(3392488136, id).then(($result: any) => {
+        return $$createType4($result);
+    });
 }
 
 /**
@@ -96,21 +124,55 @@ export function Inspect(id: string): $CancellablePromise<$models.DocumentView> {
  * 不会出现「换了一半」的应用包。
  */
 export function Install(id: string): $CancellablePromise<$models.InstallResult> {
-    return $Call.ByID(585305087, id);
+    return $Call.ByID(585305087, id).then(($result: any) => {
+        return $$createType5($result);
+    });
+}
+
+/**
+ * InstallAll 把所有「可更新」的应用逐个换到最新发布。
+ * 
+ * 串行是刻意的：每个应用更新都要退出应用、挂载镜像、换包，并行只会让
+ * 两个 hdiutil 和两次 AppleScript quit 互相踩；慢一点但每一步都清楚。
+ * 未安装的应用不在范围内 —— 这个按钮的语义是「把已有的都更到最新」，
+ * 装新应用走各自卡片上的「安装」。
+ */
+export function InstallAll(): $CancellablePromise<$models.InstallAllResult> {
+    return $Call.ByID(525478122).then(($result: any) => {
+        return $$createType6($result);
+    });
+}
+
+/**
+ * InstallSelf 把宿主自己换到最新发布，装好后拉起新副本并退出本进程。
+ * 
+ * 流程与套件应用的 Install 相同（下载 → SHA-256 → 挂载 → 验签 → 原子换位），
+ * 差异只有开头没有 QuitApp、结尾多了 relaunch。换包期间本进程还活着：
+ * rename 正在运行的 .app 在 macOS 上是允许的，旧副本的 inode 由进程握着，
+ * 替换完成前用户看到的界面不受影响。
+ */
+export function InstallSelf(): $CancellablePromise<$models.InstallResult> {
+    return $Call.ByID(3190306609).then(($result: any) => {
+        return $$createType5($result);
+    });
 }
 
 /**
  * Journal 返回最近的操作流水，最新的在前。
  */
-export function Journal(limit: number): $CancellablePromise<journal$0.Entry[] | null> {
-    return $Call.ByID(1505790771, limit);
+export function Journal(limit: number): $CancellablePromise<journal$0.Entry[]> {
+    return $Call.ByID(1505790771, limit).then(($result: any) => {
+        return $$createType8($result);
+    });
 }
 
 /**
  * Launch 启动应用并等控制通道就绪。
  */
 export function Launch(id: string): $CancellablePromise<host$0.Status> {
-    return $Call.ByID(278804335, id);
+    return $Call.ByID(278804335, id).then(($result: any) => {
+        return $$createType3($result);
+    });
 }
 
 /**
@@ -133,8 +195,10 @@ export function MCPConfig(): $CancellablePromise<string> {
  * 死掉超过 24 小时的条目在读时顺手清走——进程被 kill -9 时注销代码不会执行，
  * 不清理的话 runtime.json 会积累僵尸条目。
  */
-export function MCPRuntime(): $CancellablePromise<$models.MCPSessionView[] | null> {
-    return $Call.ByID(4117816460);
+export function MCPRuntime(): $CancellablePromise<$models.MCPSessionView[]> {
+    return $Call.ByID(4117816460).then(($result: any) => {
+        return $$createType10($result);
+    });
 }
 
 /**
@@ -144,14 +208,18 @@ export function MCPRuntime(): $CancellablePromise<$models.MCPSessionView[] | nul
  * 点一下左边列表就等于替用户打开了那个应用。
  */
 export function Menu(id: string): $CancellablePromise<menu$0.Menu> {
-    return $Call.ByID(2664148827, id);
+    return $Call.ByID(2664148827, id).then(($result: any) => {
+        return $$createType11($result);
+    });
 }
 
 /**
  * Menus 返回每个应用已预加载的菜单摘要。界面用它显示「菜单多少条、什么时候抓的」。
  */
-export function Menus(): $CancellablePromise<menu$0.Summary[] | null> {
-    return $Call.ByID(581221368);
+export function Menus(): $CancellablePromise<menu$0.Summary[]> {
+    return $Call.ByID(581221368).then(($result: any) => {
+        return $$createType13($result);
+    });
 }
 
 /**
@@ -185,15 +253,19 @@ export function OpenRelease(id: string): $CancellablePromise<void> {
  * 刻意不启动应用：预加载是后台行为，用户打开 Craft Agent 不该换来六个窗口。
  * 没开的那些等他自己启动（启动后会自动补），或者点界面上的「刷新菜单」。
  */
-export function PreloadMenus(): $CancellablePromise<menu$0.Summary[] | null> {
-    return $Call.ByID(810642079);
+export function PreloadMenus(): $CancellablePromise<menu$0.Summary[]> {
+    return $Call.ByID(810642079).then(($result: any) => {
+        return $$createType13($result);
+    });
 }
 
 /**
  * RefreshMenu 重新抓一次命令表。应用没开着就启动它 —— 这是用户明确点了刷新。
  */
 export function RefreshMenu(id: string): $CancellablePromise<menu$0.Menu> {
-    return $Call.ByID(3645402656, id);
+    return $Call.ByID(3645402656, id).then(($result: any) => {
+        return $$createType11($result);
+    });
 }
 
 /**
@@ -225,8 +297,10 @@ export function Screenshot(id: string): $CancellablePromise<string> {
 /**
  * Sessions 汇总仍在线的 AI 会话：有 session-start 但还没有 session-end 的。
  */
-export function Sessions(): $CancellablePromise<$models.SessionView[] | null> {
-    return $Call.ByID(2551660425);
+export function Sessions(): $CancellablePromise<$models.SessionView[]> {
+    return $Call.ByID(2551660425).then(($result: any) => {
+        return $$createType15($result);
+    });
 }
 
 /**
@@ -243,15 +317,19 @@ export function SetTrayLanguage(lang: string): $CancellablePromise<void> {
  * 版本这部分刻意放在服务层而不是 host：host 只负责进程与通道，查远端是另一件事，
  * 而且它需要缓存与网络超时，不该拖慢「启动应用」这条主路径。
  */
-export function Suite(): $CancellablePromise<host$0.Status[] | null> {
-    return $Call.ByID(64597592);
+export function Suite(): $CancellablePromise<host$0.Status[]> {
+    return $Call.ByID(64597592).then(($result: any) => {
+        return $$createType16($result);
+    });
 }
 
 /**
  * UpdateState 返回缓存里的检查结果，不发网络请求。
  */
 export function UpdateState(): $CancellablePromise<$models.UpdateState> {
-    return $Call.ByID(3380172342);
+    return $Call.ByID(3380172342).then(($result: any) => {
+        return $$createType2($result);
+    });
 }
 
 /**
@@ -260,3 +338,22 @@ export function UpdateState(): $CancellablePromise<$models.UpdateState> {
 export function Version(): $CancellablePromise<string> {
     return $Call.ByID(3063366872);
 }
+
+// Private type creation functions
+const $$createType0 = $models.AnchorView.createFrom;
+const $$createType1 = $Create.Array($$createType0);
+const $$createType2 = $models.UpdateState.createFrom;
+const $$createType3 = host$0.Status.createFrom;
+const $$createType4 = $models.DocumentView.createFrom;
+const $$createType5 = $models.InstallResult.createFrom;
+const $$createType6 = $models.InstallAllResult.createFrom;
+const $$createType7 = journal$0.Entry.createFrom;
+const $$createType8 = $Create.Array($$createType7);
+const $$createType9 = $models.MCPSessionView.createFrom;
+const $$createType10 = $Create.Array($$createType9);
+const $$createType11 = menu$0.Menu.createFrom;
+const $$createType12 = menu$0.Summary.createFrom;
+const $$createType13 = $Create.Array($$createType12);
+const $$createType14 = $models.SessionView.createFrom;
+const $$createType15 = $Create.Array($$createType14);
+const $$createType16 = $Create.Array($$createType3);
