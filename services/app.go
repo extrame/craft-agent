@@ -254,7 +254,7 @@ func maybeSkipOpen(ctx context.Context, app string, client *control.Client, comm
 	}
 	wctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	info, err := readIdentity(wctx, app, client)
+	info, _, err := readIdentity(wctx, app, client)
 	if err != nil || info.Path == "" {
 		return nil, false
 	}

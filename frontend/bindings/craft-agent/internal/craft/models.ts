@@ -79,6 +79,20 @@ export class App {
      */
     "docOpen"?: string;
 
+    /**
+     * IdentityCmd 是读「当前活动文档身份」的命令，返回值至少含标题、路径、
+     * 未保存标记。叫法各代不同，不是套件约定：
+     * 
+     * 	DeckCraft  file.info          {title, path, slides, dirty}，只报当前文档
+     * 	FigCraft   doc.list           [{name, path, dirty, active}]，一次报全部
+     * 	CADCraft   drawing.inspect    {title, path, dirty, …CAD 状态}，名片同 file.info
+     * 
+     * 声明在这里而不是运行时挨个试：试探的代价是对着 CADCraft 发两条它根本没有
+     * 的命令（file.info / doc.list 都不是它的方法），日志和耗时都是白花的。
+     * 空表示该应用还没有可用的身份命令（走降级守卫）。
+     */
+    "identityCmd"?: string;
+
     /** Creates a new App instance. */
     constructor($$source: Partial<App> = {}) {
         if (!("id" in $$source)) {

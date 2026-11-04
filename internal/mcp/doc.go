@@ -49,7 +49,7 @@ const (
 //	[{"active":true,"dirty":true,"index":0,"name":"新版网站设计",
 //	  "path":"/Users/…/新版网站设计.figcraft"}]
 //
-// CADCraft 0.13 两个都没有，但 drawing.inspect 返回的字段与 file.info 同形
+// CADCraft 0.17 两个都没有，但 drawing.inspect 返回的字段与 file.info 同形
 // （title/path/dirty，外加 layers/extents 等 CAD 状态）—— 实测（2026-10-30）：
 //
 //	{"dirty":false,"path":null,"title":"Drawing1", …}
@@ -86,19 +86,22 @@ func (d docIdentity) String() string {
 
 // readDoc 读活动文档的身份，按应用的身份来源分派。
 func (b *bridge) readDoc(ctx context.Context, app craft.App, c *control.Client) (docIdentity, error) {
-	switch b.identitySource(ctx, app, c) {
-	case srcDocList:
+	src := b.identitySource(ctx, app, c)
+	if src == srcDocList {
 		return b.readDocViaDocList(ctx, c)
-	case srcDrawingInspect:
-		return b.readDocViaDrawingInspect(ctx, c)
-	default:
-		return b.readDocViaFileInfo(ctx, c)
 	}
+	if src == "" {
+		return docIdentity{}, fmt.Errorf("该应用没有可读文档身份的命令")
+	}
+	// 其余来源（file.info、drawing.inspect）都是「单品」形状：一次问当前文档。
+	return b.readDocViaCmd(ctx, c, src)
 }
 
-// readDocViaFileInfo 是 file.info 来源：只报当前文档。
-func (b *bridge) readDocViaFileInfo(ctx context.Context, c *control.Client) (docIdentity, error) {
-	raw, err := c.Execute(ctx, cmdFileInfo, nil)
+// readDocViaCmd 读「只报当前文档」的那类命令。file.info 与 drawing.inspect
+// 的返回在这一层是同形的（title/path/dirty，可选 slides）；多出来的字段
+// （CAD 的图元、图层、范围）不参与身份比对，忽略。
+func (b *bridge) readDocViaCmd(ctx context.Context, c *control.Client, cmd string) (docIdentity, error) {
+	raw, err := c.Execute(ctx, cmd, nil)
 	if err != nil {
 		return docIdentity{}, err
 	}
@@ -109,7 +112,7 @@ func (b *bridge) readDocViaFileInfo(ctx context.Context, c *control.Client) (doc
 		Dirty  bool   `json:"dirty"`
 	}
 	if err := json.Unmarshal(raw, &info); err != nil {
-		return docIdentity{}, fmt.Errorf("file.info 返回无法解析: %w", err)
+		return docIdentity{}, fmt.Errorf("%s 返回无法解析: %w", cmd, err)
 	}
 	return docIdentity{Title: info.Title, Path: info.Path, Slides: info.Slides, Dirty: info.Dirty}, nil
 }
@@ -163,24 +166,6 @@ func (b *bridge) readDocViaDocList(ctx context.Context, c *control.Client) (docI
 	return docIdentity{Title: active.Name, Path: active.Path, Dirty: active.Dirty}, nil
 }
 
-// readDocViaDrawingInspect 是 drawing.inspect 来源（CADCraft 0.13）。
-// 返回字段与 file.info 同形（title/path/dirty），path 为 null 时解成空串。
-func (b *bridge) readDocViaDrawingInspect(ctx context.Context, c *control.Client) (docIdentity, error) {
-	raw, err := c.Execute(ctx, cmdDrawingInspect, nil)
-	if err != nil {
-		return docIdentity{}, err
-	}
-	var info struct {
-		Title string `json:"title"`
-		Path  string `json:"path"`
-		Dirty bool   `json:"dirty"`
-	}
-	if err := json.Unmarshal(raw, &info); err != nil {
-		return docIdentity{}, fmt.Errorf("drawing.inspect 返回无法解析: %w", err)
-	}
-	return docIdentity{Title: info.Title, Path: info.Path, Dirty: info.Dirty}, nil
-}
-
 // hasDocModel 报告该应用是否真的提供文档身份。
 //
 // 文档上下文是 agent 端维护的，但「锚点比对」这一半依赖应用能回答「我在哪一份里」。
@@ -192,26 +177,36 @@ func (b *bridge) hasDocModel(ctx context.Context, app craft.App, c *control.Clie
 }
 
 // identitySource 报告该应用用哪条命令读「当前文档身份」。
-// 命令表拿不到时保守按 file.info 处理 —— 那时真正的执行也活不成，
+//
+// 首选 catalog 的声明（IdentityCmd）：每个应用的叫法不同，这是它的属性，
+// 不是可以按固定顺序试出来的东西 —— 对着 CADCraft 先试 file.info、再试
+// doc.list，两条它都没有，白发的请求只会让日志变脏。
+//
+// 命令表只做两件事：确认声明的命令还在（应用升级可能改名），以及在没声明
+// 的应用上兜底探测。命令表拿不到时按声明直接读 —— 那时真正的执行也活不成，
 // 报原始错误比静默跳过守卫更接近真相。
 func (b *bridge) identitySource(ctx context.Context, app craft.App, c *control.Client) string {
 	set, ok := b.commandSet(ctx, app, c)
 	if !ok {
+		if app.IdentityCmd != "" {
+			return app.IdentityCmd
+		}
 		return srcFileInfo
 	}
-	if set[cmdFileInfo] {
-		return srcFileInfo
+	if app.IdentityCmd != "" && set[app.IdentityCmd] {
+		return app.IdentityCmd
 	}
-	if set[cmdDocList] {
-		return srcDocList
-	}
-	if set[cmdDrawingInspect] {
-		return srcDrawingInspect
+	// 没声明，或声明的命令已经不在命令表里（升级改了名字）：
+	// 按已知的三代叫法兜底，顺序与文档一致。
+	for _, src := range []string{cmdFileInfo, cmdDocList, cmdDrawingInspect} {
+		if set[src] {
+			return src
+		}
 	}
 	return ""
 }
 
-const docGuardNote = "该应用没有可读文档身份的命令（file.info / doc.list / drawing.inspect 都不存在），" +
+const docGuardNote = "该应用没有可读文档身份的命令（catalog 未声明，命令表里也找不到），" +
 	"文档守卫不生效：写入始终作用于当前活动文档，切换文档后请先用该应用的 inspect 类命令确认落点。"
 
 // anchorNow 把当前文档记为该应用的锚点（内存 + 落盘，见 anchor.go）。
@@ -244,7 +239,7 @@ func (b *bridge) listDocs(ctx context.Context, app craft.App, c *control.Client)
 		// CADCraft 只报得出当前这一份（drawing.inspect 没有 index/列表），
 		// 枚举没有依据，如实给单条，别拿 window.next 去碰运气 ——
 		// 它没有这条命令，切窗口的尝试只会白费。
-		cur, err := b.readDocViaDrawingInspect(ctx, c)
+		cur, err := b.readDocViaCmd(ctx, c, srcDrawingInspect)
 		if err != nil {
 			return nil, -1, err
 		}
@@ -260,7 +255,7 @@ func (b *bridge) listDocs(ctx context.Context, app craft.App, c *control.Client)
 // 越界索引是静默 no-op，所以「连续两次读到同一份身份」就是枚举结束。
 // 结束时切回原来的文档。
 func (b *bridge) listDocsViaWindows(ctx context.Context, c *control.Client) ([]docEntry, int, error) {
-	start, err := b.readDocViaFileInfo(ctx, c)
+	start, err := b.readDocViaCmd(ctx, c, srcFileInfo)
 	if err != nil {
 		return nil, -1, err
 	}
@@ -272,7 +267,7 @@ func (b *bridge) listDocsViaWindows(ctx context.Context, c *control.Client) ([]d
 		if _, err := c.Execute(ctx, cmdWindowNext, map[string]any{"index": i}); err != nil {
 			break
 		}
-		cur, err := b.readDocViaFileInfo(ctx, c)
+		cur, err := b.readDocViaCmd(ctx, c, srcFileInfo)
 		if err != nil {
 			break
 		}

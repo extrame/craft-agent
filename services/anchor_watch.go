@@ -1,12 +1,12 @@
 package services
 
 // 保存感知：控制通道没有通知机制（三代协议都是一问一答，没有 subscribe/notify），
-// 用户在应用里自己保存文件这件事不会从端口上推过来。唯一的信号是 file.info 的
-// 返回 —— dirty true→false、path 从无到有。
+// 用户在应用里自己保存文件这件事不会从端口上推过来。唯一的信号是身份命令的
+// 返回 —— dirty true→false、path 从无到有（各应用的身份命令不同，见 catalog.IdentityCmd）。
 //
 // MCP 守卫只在「下一次写入前」读身份，所以两次写入之间的保存，agent 和界面都
 // 不知情。这个 watcher 用拉的方式补上推送的缺口：对每个有锚点的应用周期性读一次
-// file.info，发现「首次保存」（锚点还没有 path、当前有了）就就地升级锚点并记一条
+// 身份，发现「首次保存」（锚点还没有 path、当前有了）就就地升级锚点并记一条
 // 流水 —— 规则与守卫的 relSaved 升级完全一致，只是把发现时间从「下次写入」
 // 提前到「保存后几秒内」。
 //
@@ -14,7 +14,7 @@ package services
 //   - 不启动应用：没连接就跳过（下次守卫自然会处理）；
 //   - 不做找回：锚点有 path 而当前对不上时，是切走了还是另存了区分不了，
 //     凭路径 file.open 会抢用户眼前的窗口 —— 这是写入时守卫的职责，轮询不抢；
-//   - 应用没有 file.info（FigCraft 那代）时安静跳过，不刷流水。
+//   - 应用没有身份命令时安静跳过，不刷流水。
 
 import (
 	"context"
@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"craft-agent/internal/control"
+	"craft-agent/internal/craft"
 	"craft-agent/internal/journal"
 )
 
@@ -73,7 +74,7 @@ func (s *AppService) watchAnchorsOnce() {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
-		info, err := readIdentity(ctx, a.App, client)
+		info, cmd, err := readIdentity(ctx, a.App, client)
 		cancel()
 		if err != nil {
 			continue // 没开文档、没有 file.info、应用正忙：都当「这次没看到」
@@ -84,15 +85,16 @@ func (s *AppService) watchAnchorsOnce() {
 		if s.upgradeAnchor(a.App, info) {
 			s.journal.Append(journal.Entry{
 				At: time.Now(), Source: "gui", Session: "gui", Kind: "anchor",
-				AppID: a.App, Command: "file.info", OK: true,
+				AppID: a.App, Command: cmd, OK: true,
 				Detail: fmt.Sprintf("用户已在应用内保存：锚点升级为文件身份 %s", info.Path),
 			})
 		}
 	}
 }
 
-// fileInfo 是 file.info 的返回口径，与 internal/mcp 的 docIdentity 一致。
-// doc.list 来源（FigCraft 这代）也压成这个形状：name→title。
+// fileInfo 是身份命令的返回口径，与 internal/mcp 的 docIdentity 一致。
+// doc.list 来源（FigCraft 那代）也压成这个形状：name→title。名字沿用旧称，
+// 因为这三个来源在这一层的形状确实一样 —— 但命令本身不是 file.info。
 type fileInfo struct {
 	Title  string `json:"title"`
 	Path   string `json:"path"`
@@ -100,8 +102,8 @@ type fileInfo struct {
 	Dirty  bool   `json:"dirty"`
 }
 
-// idSources 记住每个应用的身份来源，只在轮询 goroutine
-// 里读写（watchMu 串行化），不需要锁。
+// idSources 记住「试出来的」身份来源，只对 catalog 没声明的应用生效；
+// 只在轮询 goroutine 里读写（watchMu 串行化），不需要锁。
 const (
 	srcFileInfo       = "file.info"
 	srcDocList        = "doc.list"
@@ -110,40 +112,62 @@ const (
 
 var idSources = map[string]string{}
 
-// readIdentity 读当前文档身份，按应用分派来源。
-// DeckCraft 这代有 file.info（只报当前文档）；FigCraft 0.11.2 没有，
-// 但 doc.list 返回全部打开文档（name/path/dirty/active），取 active 项；
-// CADCraft 0.13 两个都没有，drawing.inspect 与 file.info 同形（title/path/dirty）。
-// 先按记住的来源读；没有记录时逐个试，报 unknown command 就改试下一个，
-// 并把成功的那个记住 —— 每轮只探测一次，不会反复连发。
-func readIdentity(ctx context.Context, app string, client *control.Client) (fileInfo, error) {
-	switch idSources[app] {
-	case srcDocList:
-		return readDocListIdentity(ctx, client)
-	case srcDrawingInspect:
-		return readDrawingInspect(ctx, client)
+// identityCommand 决定该应用用哪条命令读身份：catalog 声明的优先，
+// 其次是过去试出来的。返回空串表示「不知道，需要试」。
+// 抽成纯函数是为了能钉住：CADCraft 永远不会走到试错分支。
+func identityCommand(appID string) string {
+	if a, ok := craft.ByID(appID); ok && a.IdentityCmd != "" {
+		return a.IdentityCmd
 	}
+	return idSources[appID]
+}
+
+// readIdentity 读当前文档身份，并回报实际用的命令（流水里要记真实命令）。
+//
+// 来源以 catalog 的声明为准：三个应用的叫法各不相同，且不是套件约定 ——
+// CADCraft 既没有 file.info 也没有 doc.list，身份只在 drawing.inspect 里。
+// 拿固定顺序去试，等于每轮对着它发两条不存在的命令。
+//
+// 只有 catalog 没声明的应用才试错（兼容将来新接入、尚未写进 catalog 的应用）：
+// 报 unknown command 就换下一个，把成功的那个记住。
+func readIdentity(ctx context.Context, app string, client *control.Client) (fileInfo, string, error) {
+	src := identityCommand(app)
+
+	switch src {
+	case srcDocList:
+		info, err := readDocListIdentity(ctx, client)
+		return info, srcDocList, err
+	case srcDrawingInspect:
+		info, err := readDrawingInspect(ctx, client)
+		return info, srcDrawingInspect, err
+	case srcFileInfo:
+		info, err := readFileInfo(ctx, client)
+		return info, srcFileInfo, err
+	}
+
+	// 没声明过来源：按已知的三代叫法试。每条只试一次，成功即记住。
 	info, err := readFileInfo(ctx, client)
 	if err == nil {
-		return info, nil
+		idSources[app] = srcFileInfo
+		return info, srcFileInfo, nil
 	}
 	if !strings.Contains(err.Error(), "unknown command") {
-		return fileInfo{}, err
+		return fileInfo{}, srcFileInfo, err
 	}
 	info2, err2 := readDocListIdentity(ctx, client)
 	if err2 == nil {
 		idSources[app] = srcDocList
-		return info2, nil
+		return info2, srcDocList, nil
 	}
 	if !strings.Contains(err2.Error(), "unknown command") {
-		return fileInfo{}, err
+		return fileInfo{}, srcDocList, err2
 	}
 	info3, err3 := readDrawingInspect(ctx, client)
 	if err3 == nil {
 		idSources[app] = srcDrawingInspect
-		return info3, nil
+		return info3, srcDrawingInspect, nil
 	}
-	return fileInfo{}, err
+	return fileInfo{}, "", err
 }
 
 func readFileInfo(ctx context.Context, client *control.Client) (fileInfo, error) {
@@ -186,7 +210,7 @@ func readDocListIdentity(ctx context.Context, client *control.Client) (fileInfo,
 	return fileInfo{Title: active.Name, Path: active.Path, Dirty: active.Dirty}, nil
 }
 
-// readDrawingInspect 是 drawing.inspect 来源（CADCraft 0.13）：
+// readDrawingInspect 是 drawing.inspect 来源（CADCraft 0.17）：
 // 返回字段与 file.info 同形，path 为 null 时解成空串。
 func readDrawingInspect(ctx context.Context, client *control.Client) (fileInfo, error) {
 	raw, err := client.Execute(ctx, "drawing.inspect", nil)

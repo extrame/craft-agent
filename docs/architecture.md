@@ -49,14 +49,23 @@ Craft Agent answer two questions. These are requirements, not nice-to-haves:
 ### 1. Read the active document's identity
 
 The agent must be able to ask "which document is open right now" and get back at minimum
-a **title**, a **path** (empty while unsaved) and a **dirty** flag. Measured sources so
-far, in the order the bridge probes them:
+a **title**, a **path** (empty while unsaved) and a **dirty** flag. The command that answers
+this is a property of each app, not a suite-wide convention — so it is declared in the
+catalog (`craft.App.IdentityCmd`), not discovered by trying candidates in order:
 
-| Source | Apps | Shape |
+| Command | Apps | Shape |
 |---|---|---|
 | `file.info` | DeckCraft 0.11.1 | `{title, path, slides, dirty}` — current document only |
 | `doc.list` | FigCraft 0.11.2 | `[{index, name, path, dirty, active}]` — all documents, one call |
-| `drawing.inspect` | CADCraft 0.13.0 | `{title, path, entityCount, dirty}` — same shape as `file.info` |
+| `drawing.inspect` | CADCraft 0.17 | `{title, path, dirty, entities, layers, extents…}` — current drawing |
+
+CADCraft is the case that made this explicit: it has neither `file.info` nor `doc.list`,
+and probing for them meant sending two commands it does not implement on every fresh
+connection. Its identity lives in `drawing.inspect`, which also carries the whole drawing
+(entities, layers, extents) — read it for identity, not as a cheap poll.
+
+The command table is only used to confirm a declared command still exists (an upgrade may
+rename it) and to fall back to probing for apps that have no declaration yet.
 
 An app with none of these gets a degraded write guard (`guard=none`) and no anchors,
 which is exactly what we do not want: the agent edits files the user cannot see anchored.
